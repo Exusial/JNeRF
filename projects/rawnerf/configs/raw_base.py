@@ -14,7 +14,7 @@ optim = dict(
     betas=(0.9,0.99),
 )
 
-dataset_type = 'MipNerfDataset'
+dataset_type = 'RawLLFF'
 dataset_dir = '/home/penghy/nerf_data/nerf_synthetic/lego'
 dataset = dict(
     train=dict(
