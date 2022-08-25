@@ -9,7 +9,7 @@ from jnerf.utils.config import get_cfg, save_cfg
 from jnerf.utils.registry import build_from_cfg,NETWORKS,SCHEDULERS,DATASETS,OPTIMS,SAMPLERS,LOSSES
 from jnerf.models.losses.mse_loss import img2mse, mse2psnr
 from jnerf.dataset import camera_path
-from jnerf.utils.postprocess import *
+# from jnerf.utils.miputils import *
 import cv2
 
 class Runner():
@@ -63,6 +63,7 @@ class Runner():
     def train(self):
         for i in tqdm(range(self.start, self.tot_train_steps)):
             self.cfg.m_training_step = i
+            print(next(self.dataset["train"]))
             img_ids, rays_o, rays_d, rgb_target = next(self.dataset["train"])
             training_background_color = jt.random([rgb_target.shape[0],3]).stop_grad()
 
@@ -273,8 +274,11 @@ class MipRunner():
         self.dataset = {}
         self.dataset["train"]   = build_from_cfg(self.cfg.dataset.train, DATASETS, near = self.cfg.near, far=self.cfg.far)
         self.cfg.dataset_obj    = self.dataset["train"]
-        self.dataset["val"]     = build_from_cfg(self.cfg.dataset.val, DATASETS, near = self.cfg.near, far=self.cfg.far)
-        self.dataset["test"]    = build_from_cfg(self.cfg.dataset.test, DATASETS, near = self.cfg.near, far=self.cfg.far)
+        if self.cfg.dataset.val:
+            self.dataset["val"] = build_from_cfg(self.cfg.dataset.val, DATASETS)
+        else:
+            self.dataset["val"] = self.dataset["train"]
+        self.dataset["test"] = None
         self.model              = build_from_cfg(self.cfg.model, NETWORKS)
         self.cfg.model_obj      = self.model
         self.sampler            = build_from_cfg(self.cfg.sampler, SAMPLERS)
@@ -349,6 +353,8 @@ class MipRunner():
     def test(self):
         if not os.path.exists(os.path.join(self.save_path, "test")):
             os.makedirs(os.path.join(self.save_path, "test"))
+        if self.dataset["test"] is None:
+            self.dataset["test"] = build_from_cfg(self.cfg.dataset.test, DATASETS, near = self.cfg.near, far=self.cfg.far)
         mse_list=self.render_test(save_path=os.path.join(self.save_path, "test"))
         if self.dataset["test"].have_img:
             tot_psnr=0

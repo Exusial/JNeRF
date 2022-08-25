@@ -11,6 +11,7 @@ from math import tan
 from tqdm import tqdm
 import numpy as np
 from jnerf.utils.registry import DATASETS
+from jnerf.utils.miputils import *
 from .dataset_util import *
 
 @DATASETS.register_module()
@@ -306,7 +307,7 @@ class MipNerfDataset():
             self.image_data = self.image_data[rand_idx]
             self.idx_now = 0
         img_ids = self.img_ids[self.idx_now:self.idx_now+self.batch_size, 0].int()
-        rays = namedtuple_map(lambda r:r[self.idx_now:self.idx_now+self.batch_size], self.rays)
+        rays = namedtuple_map(lambda r:jt.array(r[self.idx_now:self.idx_now+self.batch_size]), self.rays)
         rgb_target = self.image_data[self.idx_now:self.idx_now+self.batch_size]
         self.idx_now+=self.batch_size
         return img_ids, rays, rgb_target
@@ -448,12 +449,12 @@ class MipNerfDataset():
         # halfway between inscribed by / circumscribed about the pixel.
         radii = dx[..., None] * 2 / jt.sqrt(12)
 
-        ones = jt.ones_like(origins[..., :1])
+        ones = jt.ones_like(origins[..., :1]).numpy()
         self.rays = Rays(
-            origins=origins,
-            directions=directions,
-            viewdirs=viewdirs,
-            radii=radii,
+            origins=origins.numpy(),
+            directions=directions.numpy(),
+            viewdirs=viewdirs.numpy(),
+            radii=radii.numpy(),
             lossmult=ones,
             near=ones * self.near,
             far=ones * self.far)

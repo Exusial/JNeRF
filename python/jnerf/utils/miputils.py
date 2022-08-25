@@ -1,9 +1,11 @@
 import collections
 import os
+import types
+from typing import Optional, Union
 import numpy as np
 import jittor as jt
 
-
+_Array = Union[np.ndarray, jt.var]
 Rays = collections.namedtuple(
     'Rays',
     ('origins', 'directions', 'viewdirs', 'radii', 'lossmult', 'near', 'far'))
@@ -422,3 +424,23 @@ def convert_to_ndc(origins, directions, focal, w, h, near=1.):
   origins = np.stack([o0, o1, o2], -1)
   directions = np.stack([d0, d1, d2], -1)
   return origins, directions
+
+def linear_to_srgb(linear: _Array,
+                   eps: Optional[float] = None,
+                   xnp: types.ModuleType = jt) -> _Array:
+  """Assumes `linear` is in [0, 1], see https://en.wikipedia.org/wiki/SRGB."""
+  if eps is None:
+    eps = xnp.finfo(xnp.float32).eps
+  srgb0 = 323 / 25 * linear
+  srgb1 = (211 * xnp.maximum(eps, linear)**(5 / 12) - 11) / 200
+  return xnp.where(linear <= 0.0031308, srgb0, srgb1)
+
+def downsample(img, factor):
+  """Area downsample img (factor must evenly divide img height and width)."""
+  sh = img.shape
+  if not (sh[0] % factor == 0 and sh[1] % factor == 0):
+    raise ValueError(f'Downsampling factor {factor} does not '
+                     f'evenly divide image shape {sh[:2]}')
+  img = img.reshape((sh[0] // factor, factor, sh[1] // factor, factor) + sh[2:])
+  img = img.mean((1, 3))
+  return img
