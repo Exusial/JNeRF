@@ -252,7 +252,7 @@ def process_exif(
   return meta
 
 
-def load_raw_dataset(split: utils.DataSplit,
+def load_raw_dataset(split: str,
                      data_dir: str,
                      image_names: Sequence[str],
                      exposure_percentile: float,
@@ -290,8 +290,8 @@ def load_raw_dataset(split: utils.DataSplit,
   testscene = utils.file_exists(testimg_file)
   if testscene:
     # Test scenes have train/ and test/ split subdirectories inside raw/.
-    image_dir = os.path.join(image_dir, split.value)
-    if split == utils.DataSplit.TEST:
+    image_dir = os.path.join(image_dir, split)
+    if split == 'test':
       # COLMAP image names not valid for test split of test scene.
       image_names = None
     else:
@@ -301,7 +301,7 @@ def load_raw_dataset(split: utils.DataSplit,
   raws, exifs = load_raw_images(image_dir, image_names)
   meta = process_exif(exifs)
 
-  if testscene and split == utils.DataSplit.TEST:
+  if testscene and split == 'test':
     # Test split for test scene must load the "ground truth" HDR+ merged image.
     with utils.open_file(testimg_file, 'rb') as imgin:
       testraw = rawpy.imread(imgin).raw_image

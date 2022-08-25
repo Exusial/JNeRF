@@ -9,6 +9,7 @@ from jnerf.utils.config import get_cfg, save_cfg
 from jnerf.utils.registry import build_from_cfg,NETWORKS,SCHEDULERS,DATASETS,OPTIMS,SAMPLERS,LOSSES
 from jnerf.models.losses.mse_loss import img2mse, mse2psnr
 from jnerf.dataset import camera_path
+from jnerf.utils import *
 # from jnerf.utils.miputils import *
 import cv2
 
@@ -305,7 +306,16 @@ class MipRunner():
         self.num_levels = self.cfg.num_levels
         self.coarse_loss_mult = self.cfg.coarse_loss_mult
         self.disable_multiscale_loss = self.cfg.disable_multiscale_loss
-    
+        self.rawnerf_mode = self.cfg.enable_raw
+        self.learned_exposure_scaling = self.cfg.learned_exposure_scaling
+        # TODO: move this model to network after aligning models.
+        if self.learned_exposure_scaling:
+            self.num_glo_embeddings = self.cfg.num_glo_embeddings
+            # Setup learned scaling factors for output colors.
+            max_num_exposures = self.num_glo_embeddings
+            # TODO: Initialize the learned scaling offsets at 0.
+            self.exposure_scaling_offsets = nn.Embedding(max_num_exposures, 3)
+
     def get_rgb_density(self, img_ids, rays):
         ret = []
         t_vals, weights = None, None
@@ -314,6 +324,17 @@ class MipRunner():
             raw_rgb, raw_density = self.model(samples_enc, viewdirs_enc)
             # print("ret:", raw_rgb, raw_density)
             # print(rgb, density)
+            if rays.exposure_idx is not None:
+                # Scale output colors by the exposure.
+                raw_rgb *= rays.exposure_values[..., None, :]
+                if self.learned_exposure_scaling:
+                    exposure_idx = rays.exposure_idx[..., 0]
+                # Force scaling offset to always be zero when exposure_idx is 0.
+                # This constraint fixes a reference point for the scene's brightness.
+                mask = exposure_idx > 0
+                # Scaling is parameterized as an offset from 1.
+                scaling = 1 + mask[..., None] * self.exposure_scaling_offsets(exposure_idx)
+                raw_rgb *= scaling[..., None, :]
             comp_rgb, distance, acc, weights = self.sampler.rays2rgb(rays, raw_rgb, raw_density, t_vals)
             # print("rgb", comp_rgb, distance, acc, weights)
             ret.append((comp_rgb, distance, acc))
@@ -348,6 +369,18 @@ class MipRunner():
             if i % 1000 == 0 and i > 0:
                 psnr=mse2psnr(self.val_img(i))
                 print("STEP={} | LOSS={} | VAL PSNR={}".format(i,loss.mean().item(), psnr))
+        # if self.rawnerf_mode:
+        #     # Unprocess raw output.
+        #     vis_suite['color_raw'] = rendering['rgb']
+        #     # Autoexposed colors.
+        #     vis_suite['color_auto'] = postprocess_fn(rendering['rgb'], None)
+        #     summary_writer.image('test_true_auto', postprocess_fn(test_case.rgb, None), step)
+        #     # Exposure sweep colors.
+        #     exposures = test_dataset.metadata['exposure_levels']
+        #     for p, x in list(exposures.items()):
+        #         vis_suite[f'color/{p}'] = postprocess_fn(rendering['rgb'], x)
+        #         summary_writer.image(f'test_true_color/{p}',
+        #                             postprocess_fn(test_case.rgb, x), step)
         self.test()
 
     def test(self):
@@ -434,4 +467,8 @@ class MipRunner():
         imgs_tar=self.dataset[dataset_mode].image_data[img_ids].reshape(H, W, 4)
         imgs_tar = imgs_tar[..., :3] * imgs_tar[..., 3:] + jt.array(self.background_color) * (1 - imgs_tar[..., 3:])
         imgs_tar = imgs_tar.detach().numpy()
-        return rgb, imgs_tar
+        if self.rawnerf_mode:
+            postprocess_fn = dataset.metadata['postprocess_fn']
+        else:
+            postprocess_fn = lambda z: z
+        return postprocess_fn(rgb), postprocess_fn(imgs_tar)

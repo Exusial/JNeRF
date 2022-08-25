@@ -13,3 +13,14 @@ class MSELoss(nn.Module):
 
     def execute(self, x, target):
         return img2mse(x, target)
+
+@LOSSES.register_module()
+class RawNerfMSELoss(nn.Module):
+    def __init__(self):
+        pass
+
+    def execute(self, x, target):
+        rgb_clip = jt.minimum(1., x)
+        mse = (rgb_clip - target)**2
+        scaling_grad = 1. / (1e-3 + rgb_clip.detach())
+        return mse * scaling_grad**2

@@ -16,7 +16,6 @@ from .dataset_util import *
 
 @DATASETS.register_module()
 class NerfDataset():
-
     def __init__(self,root_dir, batch_size, mode='train', H=0, W=0, correct_pose=[1,-1,-1], aabb_scale=None, scale=None, offset=None, img_alpha=True,to_jt=True, have_img=True, preload_shuffle=True):
         self.root_dir=root_dir
         self.batch_size=batch_size
@@ -268,7 +267,7 @@ class NerfDataset():
 
 @DATASETS.register_module()
 class MipNerfDataset():
-    def __init__(self,root_dir, batch_size, mode='train', H=0, W=0, near=0., far=1., correct_pose=[1,-1,-1], aabb_scale=None, offset=None, img_alpha=True, have_img=True, preload_shuffle=True):
+    def __init__(self,root_dir, batch_size, mode='train', H=0, W=0, near=0., far=1., correct_pose=[1,-1,-1], aabb_scale=None, offset=None, img_alpha=True, have_img=True, preload_shuffle=True, abstract=False):
         self.root_dir=root_dir
         self.batch_size=batch_size
         self.preload_shuffle=preload_shuffle
@@ -294,9 +293,15 @@ class MipNerfDataset():
         self.idx_now=0
         self.near = near
         self.far = far
-        self.load_data()
+        self.exposures = None
+        self.render_exposures = None
+        self.render_path = get_cfg().render_path
+        self.rawnerf_mode = get_cfg().enable_raw
+        if not abstract:
+            self.load_data()
         jt.gc()
- 
+
+
     def __next__(self):
         if self.idx_now+self.batch_size >= self.rays.origins.shape[0]:
             rand_idx = jt.randperm(self.rays.origins.shape[0])
@@ -370,7 +375,7 @@ class MipNerfDataset():
             self.n_images+=1
             matrix=np.array(frame['transform_matrix'],np.float32)[:-1, :]
             self.transforms_gpu.append(matrix)
-
+            break
         self.resolution=[self.W,self.H]
 
         def read_focal_length(resolution: int, axis: str):
@@ -402,7 +407,7 @@ class MipNerfDataset():
 
         self.image_data=jt.array(self.image_data)
         self.transforms_gpu=jt.array(self.transforms_gpu)
-        self.focal_lengths=jt.array(self.focal_lengths)
+        self.focal_lengths=jt.array(self.focal_lengths)[0]
         ## transpose to adapt Eigen::Matrix memory
         # self.transforms_gpu=self.transforms_gpu.transpose(0,2,1)
         if self.img_alpha and self.image_data.shape[-1]==3:
@@ -414,6 +419,7 @@ class MipNerfDataset():
                 self.img_ids=jt.linspace(0,self.n_images-1,self.n_images).unsqueeze(-1).repeat(self.H*self.W).reshape(self.n_images*self.H*self.W,-1)
             else:
                 self.img_ids=jt.array([0]).unsqueeze(-1).repeat(self.H*self.W).reshape(self.n_images*self.H*self.W,-1)
+            self.rays.cam_idx = self.img_ids
             self.image_data = self.image_data.reshape(self.n_images*self.H*self.W, -1)
             self.rays = namedtuple_map(lambda r: r.reshape(self.n_images*self.H*self.W, -1), self.rays)
 
@@ -431,8 +437,8 @@ class MipNerfDataset():
             indexing='xy'))
         # print(self.focal_lengths)
         camera_dirs = jt.stack(
-            [(x - self.W * 0.5 + 0.5) / self.focal_lengths[0][0],
-            -(y - self.H * 0.5 + 0.5) / self.focal_lengths[0][1], -jt.ones_like(x)],
+            [(x - self.W * 0.5 + 0.5) / self.focal_lengths[0],
+            -(y - self.H * 0.5 + 0.5) / self.focal_lengths[1], -jt.ones_like(x)],
             -1)
         directions = ((camera_dirs[None, ..., None, :] *
                     self.transforms_gpu[:, None, None, :3, :3]).sum(-1))
@@ -448,16 +454,33 @@ class MipNerfDataset():
         # Cut the distance in half, and then round it out so that it's
         # halfway between inscribed by / circumscribed about the pixel.
         radii = dx[..., None] * 2 / jt.sqrt(12)
-
+        origin_shape = (origins.shape[0], 1)
         ones = jt.ones_like(origins[..., :1]).numpy()
+        imageplanes = None
+        n_img = origins.shpae[0] // (self.H * self.W)
+        if self.metadata is not None:
+            for cam_idx in range(n_img):
+                # Exposure index and relative shutter speed, needed for RawNeRF.
+                ori_exposure_idx = self.metadata['exposure_idx']
+                ori_exposure_values = self.metadata['exposure_value']
+                exposure_idx = ori_exposure_idx.repeat(self.H * self.W, -1).reshape(origins.shape[0], 1)
+                exposure_values = ori_exposure_values.repeat(self.H * self.W, -1).reshape(origins.shape[0], 1)
+        if self.exposures is not None:
+            exposure_values = self.exposures.repeat(self.H * self.W, -1).reshape(origins.shape[0], 1)
+        if self.render_path and self.render_exposures is not None:
+             exposure_values = self.render_exposures.repeat(self.H * self.W, -1).reshape(origins.shape[0], 1)
         self.rays = Rays(
             origins=origins.numpy(),
             directions=directions.numpy(),
             viewdirs=viewdirs.numpy(),
             radii=radii.numpy(),
+            imageplane=imageplanes,
             lossmult=ones,
             near=ones * self.near,
-            far=ones * self.far)
+            far=ones * self.far,
+            cam_idx=None,
+            exposure_idx=exposure_idx.numpy(),
+            exposure_values=exposure_values.numpy())
 
     def generate_rays_total_test(self, img_ids, H, W):
         """Generating rays for all testing images."""
@@ -492,6 +515,19 @@ class MipNerfDataset():
         radii = dx[..., None] * 2 / jt.sqrt(12)
 
         ones = jt.ones_like(origins[..., :1])
+        imageplanes = None
+        n_img = origins.shpae[0] // (self.H * self.W)
+        if self.metadata is not None:
+            for cam_idx in range(n_img):
+                # Exposure index and relative shutter speed, needed for RawNeRF.
+                ori_exposure_idx = self.metadata['exposure_idx']
+                ori_exposure_values = self.metadata['exposure_value']
+                exposure_idx = ori_exposure_idx.repeat(self.H * self.W, -1).reshape(origins.shape[0], 1)
+                exposure_values = ori_exposure_values.repeat(self.H * self.W, -1).reshape(origins.shape[0], 1)
+        if self.exposures is not None:
+            exposure_values = self.exposures.repeat(self.H * self.W, -1).reshape(origins.shape[0], 1)
+        if self.render_path and self.render_exposures is not None:
+             exposure_values = self.render_exposures.repeat(self.H * self.W, -1).reshape(origins.shape[0], 1)
         rays = Rays(
             origins=origins,
             directions=directions,

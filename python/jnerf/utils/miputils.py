@@ -8,7 +8,7 @@ import jittor as jt
 _Array = Union[np.ndarray, jt.var]
 Rays = collections.namedtuple(
     'Rays',
-    ('origins', 'directions', 'viewdirs', 'radii', 'lossmult', 'near', 'far'))
+    ('origins', 'directions', 'viewdirs', 'radii', 'imageplane', 'lossmult', 'near', 'far', 'cam_idx', 'exposure_idx', 'exposure_values'))
 
 def namedtuple_map(fn, tup):
   """Apply `fn` to each element of `tup` and cast to `tup`'s namedtuple."""
