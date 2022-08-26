@@ -300,6 +300,9 @@ def load_raw_dataset(split: str,
       image_names = image_names[1:]
 
   raws, exifs = load_raw_images(image_dir, image_names)
+  print("finish load raw images")
+  raws = raws[:2]
+  exifs = exifs[:2]
   meta = process_exif(exifs)
   if testscene and split == 'test':
     # Test split for test scene must load the "ground truth" HDR+ merged image.

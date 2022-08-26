@@ -176,7 +176,7 @@ class RawLLFF(MipNerfDataset):
                 self.cfg.exposure_percentile,
                 factor)
             self.metadata = metadata
-
+        print("finish load.")
         # Load bounds if possible (only used in forward facing scenes).
         posefile = os.path.join(self.root_dir, 'poses_bounds.npy')
         if os.path.exists(posefile):
@@ -202,7 +202,7 @@ class RawLLFF(MipNerfDataset):
                 transform @ self.colmap_to_world_transform)
             # Forward-facing spiral render path.
             self.render_poses = camera_utils.generate_spiral_path(
-                poses, bounds, n_frames=config.render_path_frames)
+                poses, bounds, n_frames=self.cfg.render_path_frames)
         else:
             # Rotate/scale poses to align ground with xy plane and fit to unit cube.
             poses, transform = camera_utils.transform_poses_pca(poses)
@@ -236,10 +236,10 @@ class RawLLFF(MipNerfDataset):
         else:
             train_indices = all_indices % self.cfg.llffhold != 0
         split_indices = {
-            'test': all_indices[all_indices % config.llffhold == 0],
+            'test': all_indices[all_indices % self.cfg.llffhold == 0],
             'train': train_indices,
         }
-        indices = split_indices[self.split]
+        indices = split_indices[self.mode]
         # All per-image quantities must be re-indexed using the split indices.
         if self.preload_shuffle:
             indices = indices[np.randperm(0, indices.shape[0])]

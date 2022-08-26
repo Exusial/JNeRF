@@ -21,7 +21,7 @@ All input/output step functions are assumed to be aligned along the last axis.
 `w` indicates bin weights that sum to <= 1. `p` indicates non-negative bin
 values that *integrate* to <= 1.
 """
-
+import numpy as np
 from jnerf.utils import math
 import jittor as jt
 
@@ -75,18 +75,18 @@ def inner_outer(t0, t1, y1):
   return y0_inner, y0_outer
 
 
-def lossfun_outer(t, w, t_env, w_env, eps=jnp.finfo(jnp.float32).eps):
-  """The proposal weight should be an upper envelope on the nerf weight."""
-  _, w_outer = inner_outer(t, t_env, w_env)
-  # We assume w_inner <= w <= w_outer. We don't penalize w_inner because it's
-  # more effective to pull w_outer up than it is to push w_inner down.
-  # Scaled half-quadratic loss that gives a constant gradient at w_outer = 0.
-  return jnp.maximum(0, w - w_outer)**2 / (w + eps)
+# def lossfun_outer(t, w, t_env, w_env, eps=finfo(jnp.float32).eps):
+#   """The proposal weight should be an upper envelope on the nerf weight."""
+#   _, w_outer = inner_outer(t, t_env, w_env)
+#   # We assume w_inner <= w <= w_outer. We don't penalize w_inner because it's
+#   # more effective to pull w_outer up than it is to push w_inner down.
+#   # Scaled half-quadratic loss that gives a constant gradient at w_outer = 0.
+#   return jnp.maximum(0, w - w_outer)**2 / (w + eps)
 
 
-def weight_to_pdf(t, w, eps=jnp.finfo(jnp.float32).eps**2):
-  """Turn a vector of weights that sums to 1 into a PDF that integrates to 1."""
-  return w / jnp.maximum(eps, (t[..., 1:] - t[..., :-1]))
+# def weight_to_pdf(t, w, eps=jnp.finfo(jnp.float32).eps**2):
+#   """Turn a vector of weights that sums to 1 into a PDF that integrates to 1."""
+#   return w / jnp.maximum(eps, (t[..., 1:] - t[..., :-1]))
 
 
 def pdf_to_weight(t, p):
@@ -94,36 +94,36 @@ def pdf_to_weight(t, p):
   return p * (t[..., 1:] - t[..., :-1])
 
 
-def max_dilate(t, w, dilation, domain=(-jnp.inf, jnp.inf)):
-  """Dilate (via max-pooling) a non-negative step function."""
-  t0 = t[..., :-1] - dilation
-  t1 = t[..., 1:] + dilation
-  t_dilate = jnp.sort(jnp.concatenate([t, t0, t1], axis=-1), axis=-1)
-  t_dilate = jnp.clip(t_dilate, *domain)
-  w_dilate = jnp.max(
-      jnp.where(
-          (t0[..., None, :] <= t_dilate[..., None])
-          & (t1[..., None, :] > t_dilate[..., None]),
-          w[..., None, :],
-          0,
-      ),
-      axis=-1)[..., :-1]
-  return t_dilate, w_dilate
+# def max_dilate(t, w, dilation, domain=(-jnp.inf, jnp.inf)):
+#   """Dilate (via max-pooling) a non-negative step function."""
+#   t0 = t[..., :-1] - dilation
+#   t1 = t[..., 1:] + dilation
+#   t_dilate = jnp.sort(jnp.concatenate([t, t0, t1], axis=-1), axis=-1)
+#   t_dilate = jnp.clip(t_dilate, *domain)
+#   w_dilate = jnp.max(
+#       jnp.where(
+#           (t0[..., None, :] <= t_dilate[..., None])
+#           & (t1[..., None, :] > t_dilate[..., None]),
+#           w[..., None, :],
+#           0,
+#       ),
+#       axis=-1)[..., :-1]
+#   return t_dilate, w_dilate
 
 
-def max_dilate_weights(t,
-                       w,
-                       dilation,
-                       domain=(-jnp.inf, jnp.inf),
-                       renormalize=False,
-                       eps=jnp.finfo(jnp.float32).eps**2):
-  """Dilate (via max-pooling) a set of weights."""
-  p = weight_to_pdf(t, w)
-  t_dilate, p_dilate = max_dilate(t, p, dilation, domain=domain)
-  w_dilate = pdf_to_weight(t_dilate, p_dilate)
-  if renormalize:
-    w_dilate /= jnp.maximum(eps, jnp.sum(w_dilate, axis=-1, keepdims=True))
-  return t_dilate, w_dilate
+# def max_dilate_weights(t,
+#                        w,
+#                        dilation,
+#                        domain=(-jnp.inf, jnp.inf),
+#                        renormalize=False,
+#                        eps=jnp.finfo(jnp.float32).eps**2):
+#   """Dilate (via max-pooling) a set of weights."""
+#   p = weight_to_pdf(t, w)
+#   t_dilate, p_dilate = max_dilate(t, p, dilation, domain=domain)
+#   w_dilate = pdf_to_weight(t_dilate, p_dilate)
+#   if renormalize:
+#     w_dilate /= jnp.maximum(eps, jnp.sum(w_dilate, axis=-1, keepdims=True))
+#   return t_dilate, w_dilate
 
 
 def integrate_weights(w):
@@ -144,7 +144,7 @@ def integrate_weights(w):
   cw = np.minimum(1, np.cumsum(w[..., :-1], axis=-1))
   shape = cw.shape[:-1] + (1,)
   # Ensure that the CDF starts with exactly 0 and ends with exactly 1.
-  cw0 = np.concatenate([jnp.zeros(shape), cw, jnp.ones(shape)], axis=-1)
+  cw0 = np.concatenate([np.zeros(shape), cw, np.ones(shape)], axis=-1)
   return cw0
 
 def softmax(x):
@@ -205,7 +205,7 @@ def sample(rng,
       u = np.linspace(pad, 1. - pad - eps, num_samples)
     else:
       u = np.linspace(0, 1. - eps, num_samples)
-    u = u.broadcast(t.shape[:-1] + (num_samples,))
+    u = np.broadcast_to(u, t.shape[:-1] + (num_samples,))
   else:
     pass
     # # `u` is in [0, 1) --- it can be zero, but it can never be 1.
@@ -219,56 +219,56 @@ def sample(rng,
   return invert_cdf(u, t, w_logits, use_gpu_resampling=use_gpu_resampling)
 
 
-def sample_intervals(rng,
-                     t,
-                     w_logits,
-                     num_samples,
-                     single_jitter=False,
-                     domain=(-jnp.inf, jnp.inf),
-                     use_gpu_resampling=False):
-  """Sample *intervals* (rather than points) from a step function.
+# def sample_intervals(rng,
+#                      t,
+#                      w_logits,
+#                      num_samples,
+#                      single_jitter=False,
+#                      domain=(-jnp.inf, jnp.inf),
+#                      use_gpu_resampling=False):
+#   """Sample *intervals* (rather than points) from a step function.
 
-  Args:
-    rng: random number generator (or None for `linspace` sampling).
-    t: [..., num_bins + 1], bin endpoint coordinates (must be sorted)
-    w_logits: [..., num_bins], logits corresponding to bin weights
-    num_samples: int, the number of intervals to sample.
-    single_jitter: bool, if True, jitter every sample along each ray by the same
-      amount in the inverse CDF. Otherwise, jitter each sample independently.
-    domain: (minval, maxval), the range of valid values for `t`.
-    use_gpu_resampling:  bool, If True this resamples the rays based on a
-      "gather" instruction, which is fast on GPUs but slow on TPUs. If False,
-      this resamples the rays based on brute-force searches, which is fast on
-      TPUs, but slow on GPUs.
+#   Args:
+#     rng: random number generator (or None for `linspace` sampling).
+#     t: [..., num_bins + 1], bin endpoint coordinates (must be sorted)
+#     w_logits: [..., num_bins], logits corresponding to bin weights
+#     num_samples: int, the number of intervals to sample.
+#     single_jitter: bool, if True, jitter every sample along each ray by the same
+#       amount in the inverse CDF. Otherwise, jitter each sample independently.
+#     domain: (minval, maxval), the range of valid values for `t`.
+#     use_gpu_resampling:  bool, If True this resamples the rays based on a
+#       "gather" instruction, which is fast on GPUs but slow on TPUs. If False,
+#       this resamples the rays based on brute-force searches, which is fast on
+#       TPUs, but slow on GPUs.
 
-  Returns:
-    t_samples: jnp.ndarray(float32), [batch_size, num_samples].
-  """
-  if num_samples <= 1:
-    raise ValueError(f'num_samples must be > 1, is {num_samples}.')
+#   Returns:
+#     t_samples: jnp.ndarray(float32), [batch_size, num_samples].
+#   """
+#   if num_samples <= 1:
+#     raise ValueError(f'num_samples must be > 1, is {num_samples}.')
 
-  # Sample a set of points from the step function.
-  centers = sample(
-      rng,
-      t,
-      w_logits,
-      num_samples,
-      single_jitter,
-      deterministic_center=True,
-      use_gpu_resampling=use_gpu_resampling)
+#   # Sample a set of points from the step function.
+#   centers = sample(
+#       rng,
+#       t,
+#       w_logits,
+#       num_samples,
+#       single_jitter,
+#       deterministic_center=True,
+#       use_gpu_resampling=use_gpu_resampling)
 
-  # The intervals we return will span the midpoints of each adjacent sample.
-  mid = (centers[..., 1:] + centers[..., :-1]) / 2
+#   # The intervals we return will span the midpoints of each adjacent sample.
+#   mid = (centers[..., 1:] + centers[..., :-1]) / 2
 
-  # Each first/last fencepost is the reflection of the first/last midpoint
-  # around the first/last sampled center. We clamp to the limits of the input
-  # domain, provided by the caller.
-  minval, maxval = domain
-  first = jnp.maximum(minval, 2 * centers[..., :1] - mid[..., :1])
-  last = jnp.minimum(maxval, 2 * centers[..., -1:] - mid[..., -1:])
+#   # Each first/last fencepost is the reflection of the first/last midpoint
+#   # around the first/last sampled center. We clamp to the limits of the input
+#   # domain, provided by the caller.
+#   minval, maxval = domain
+#   first = jnp.maximum(minval, 2 * centers[..., :1] - mid[..., :1])
+#   last = jnp.minimum(maxval, 2 * centers[..., -1:] - mid[..., -1:])
 
-  t_samples = jnp.concatenate([first, mid, last], axis=-1)
-  return t_samples
+#   t_samples = jnp.concatenate([first, mid, last], axis=-1)
+#   return t_samples
 
 
 def lossfun_distortion(t, w):
@@ -316,35 +316,35 @@ def weighted_percentile(t, w, ps):
   return wprctile
 
 
-def resample(t, tp, vp, use_avg=False, eps=jnp.finfo(jnp.float32).eps):
-  """Resample a step function defined by (tp, vp) into intervals t.
+# def resample(t, tp, vp, use_avg=False, eps=jnp.finfo(jnp.float32).eps):
+#   """Resample a step function defined by (tp, vp) into intervals t.
 
-  Notation roughly matches jnp.interp. Resamples by summation by default.
+#   Notation roughly matches jnp.interp. Resamples by summation by default.
 
-  Args:
-    t: tensor with shape (..., n+1), the endpoints to resample into.
-    tp: tensor with shape (..., m+1), the endpoints of the step function being
-      resampled.
-    vp: tensor with shape (..., m), the values of the step function being
-      resampled.
-    use_avg: bool, if False, return the sum of the step function for each
-      interval in `t`. If True, return the average, weighted by the width of
-      each interval in `t`.
-    eps: float, a small value to prevent division by zero when use_avg=True.
+#   Args:
+#     t: tensor with shape (..., n+1), the endpoints to resample into.
+#     tp: tensor with shape (..., m+1), the endpoints of the step function being
+#       resampled.
+#     vp: tensor with shape (..., m), the values of the step function being
+#       resampled.
+#     use_avg: bool, if False, return the sum of the step function for each
+#       interval in `t`. If True, return the average, weighted by the width of
+#       each interval in `t`.
+#     eps: float, a small value to prevent division by zero when use_avg=True.
 
-  Returns:
-    v: tensor with shape (..., n), the values of the resampled step function.
-  """
-  if use_avg:
-    wp = jnp.diff(tp, axis=-1)
-    v_numer = resample(t, tp, vp * wp, use_avg=False)
-    v_denom = resample(t, tp, wp, use_avg=False)
-    v = v_numer / jnp.maximum(eps, v_denom)
-    return v
+#   Returns:
+#     v: tensor with shape (..., n), the values of the resampled step function.
+#   """
+#   if use_avg:
+#     wp = jnp.diff(tp, axis=-1)
+#     v_numer = resample(t, tp, vp * wp, use_avg=False)
+#     v_denom = resample(t, tp, wp, use_avg=False)
+#     v = v_numer / jnp.maximum(eps, v_denom)
+#     return v
 
-  acc = jnp.cumsum(vp, axis=-1)
-  acc0 = jnp.concatenate([jnp.zeros(acc.shape[:-1] + (1,)), acc], axis=-1)
-  acc0_resampled = jnp.vectorize(
-      jnp.interp, signature='(n),(m),(m)->(n)')(t, tp, acc0)
-  v = jnp.diff(acc0_resampled, axis=-1)
-  return v
+#   acc = jnp.cumsum(vp, axis=-1)
+#   acc0 = jnp.concatenate([jnp.zeros(acc.shape[:-1] + (1,)), acc], axis=-1)
+#   acc0_resampled = jnp.vectorize(
+#       jnp.interp, signature='(n),(m),(m)->(n)')(t, tp, acc0)
+#   v = jnp.diff(acc0_resampled, axis=-1)
+#   return v

@@ -22,7 +22,7 @@ def matmul(a, b):
   return jt.matmul(a, b)
 
 
-def safe_trig_helper(x, fn, t=100 * jnp.pi):
+def safe_trig_helper(x, fn, t=100 * pi):
   """Helper function used by safe_cos/safe_sin: mods x before sin()/cos()."""
   return fn(jt.where(jt.abs(x) < t, x, x % t))
 
@@ -37,13 +37,11 @@ def safe_sin(x):
   return safe_trig_helper(x, jt.sin)
 
 
-@jax.custom_jvp
 def safe_exp(x):
   """jnp.exp() but with finite output and gradients for large inputs."""
   return jt.exp(jt.minimum(x, 88.))  # jnp.exp(89) is infinity.
 
 
-@safe_exp.defjvp
 def safe_exp_jvp(primals, tangents):
   """Override safe_exp()'s gradient so that it's large when inputs are large."""
   x, = primals

@@ -97,3 +97,5 @@ z_phase = 0.
 raw_testscene = False
 factor = 4
 exposure_percentile = 97.
+llff_use_all_images_for_training = False
+llffhold = 8
