@@ -18,10 +18,13 @@ import enum
 import types
 from typing import List, Mapping, Optional, Text, Tuple, Union
 
-from internal import configs
-from internal import math
-from internal import stepfun
-from internal import utils
+# from internal import configs
+# from internal import math
+# from internal import stepfun
+# from internal import utils
+from jnerf.utils.miputils import *
+from jnerf.utils.config import get_cfg, save_cfg
+from jnerf.utils import stepfun
 import jittor as jt
 import numpy as np
 import scipy
@@ -341,7 +344,7 @@ def interpolate_1d(x: np.ndarray,
 
 
 def create_render_spline_path(
-    config: configs.Config,
+    config,
     image_names: Union[Text, List[Text]],
     poses: np.ndarray,
     exposures: Optional[np.ndarray],
@@ -359,7 +362,7 @@ def create_render_spline_path(
     render_poses: array of interpolated extrinsic camera poses for the path.
     render_exposures: optional list of interpolated exposures for the path.
   """
-  if utils.isdir(config.render_spline_keyframes):
+  if os.path.isdir(config.render_spline_keyframes):
     # If directory, use image filenames.
     keyframe_names = sorted(utils.listdir(config.render_spline_keyframes))
   else:
@@ -630,134 +633,4 @@ def pixels_to_rays(
 
   return origins, directions, viewdirs, radii, imageplane
 
-
-def cast_ray_batch(
-    cameras: Tuple[_Array, ...],
-    pixels: utils.Pixels,
-    camtype: ProjectionType = ProjectionType.PERSPECTIVE,
-    xnp: types.ModuleType = np) -> utils.Rays:
-  """Maps from input cameras and Pixel batch to output Ray batch.
-
-  `cameras` is a Tuple of four sets of camera parameters.
-    pixtocams: 1 or N stacked [3, 3] inverse intrinsic matrices.
-    camtoworlds: 1 or N stacked [3, 4] extrinsic pose matrices.
-    distortion_params: optional, dict[str, float] containing pinhole model
-      distortion parameters.
-    pixtocam_ndc: optional, [3, 3] inverse intrinsic matrix for mapping to NDC.
-
-  Args:
-    cameras: described above.
-    pixels: integer pixel coordinates and camera indices, plus ray metadata.
-      These fields can be an arbitrary batch shape.
-    camtype: camera_utils.ProjectionType, fisheye or perspective camera.
-    xnp: either numpy or jax.numpy.
-
-  Returns:
-    rays: Rays dataclass with computed 3D world space ray data.
-  """
-  pixtocams, camtoworlds, distortion_params, pixtocam_ndc = cameras
-
-  # pixels.cam_idx has shape [..., 1], remove this hanging dimension.
-  cam_idx = pixels.cam_idx[..., 0]
-  batch_index = lambda arr: arr if arr.ndim == 2 else arr[cam_idx]
-
-  # Compute rays from pixel coordinates.
-  origins, directions, viewdirs, radii, imageplane = pixels_to_rays(
-      pixels.pix_x_int,
-      pixels.pix_y_int,
-      batch_index(pixtocams),
-      batch_index(camtoworlds),
-      distortion_params=distortion_params,
-      pixtocam_ndc=pixtocam_ndc,
-      camtype=camtype,
-      xnp=xnp)
-
-  # Create Rays data structure.
-  return utils.Rays(
-      origins=origins,
-      directions=directions,
-      viewdirs=viewdirs,
-      radii=radii,
-      imageplane=imageplane,
-      lossmult=pixels.lossmult,
-      near=pixels.near,
-      far=pixels.far,
-      cam_idx=pixels.cam_idx,
-      exposure_idx=pixels.exposure_idx,
-      exposure_values=pixels.exposure_values,
-  )
-
-
-def cast_pinhole_rays(camtoworld: _Array,
-                      height: int,
-                      width: int,
-                      focal: float,
-                      near: float,
-                      far: float,
-                      xnp: types.ModuleType) -> utils.Rays:
-  """Wrapper for generating a pinhole camera ray batch (w/o distortion)."""
-
-  pix_x_int, pix_y_int = pixel_coordinates(width, height, xnp=xnp)
-  pixtocam = get_pixtocam(focal, width, height, xnp=xnp)
-
-  ray_args = pixels_to_rays(pix_x_int, pix_y_int, pixtocam, camtoworld, xnp=xnp)
-
-  broadcast_scalar = lambda x: xnp.broadcast_to(x, pix_x_int.shape)[..., None]
-  ray_kwargs = {
-      'lossmult': broadcast_scalar(1.),
-      'near': broadcast_scalar(near),
-      'far': broadcast_scalar(far),
-      'cam_idx': broadcast_scalar(0),
-  }
-
-  return utils.Rays(*ray_args, **ray_kwargs)
-
-
-def cast_spherical_rays(camtoworld: _Array,
-                        height: int,
-                        width: int,
-                        near: float,
-                        far: float,
-                        xnp: types.ModuleType) -> utils.Rays:
-  """Generates a spherical camera ray batch."""
-
-  theta_vals = xnp.linspace(0, 2 * xnp.pi, width + 1)
-  phi_vals = xnp.linspace(0, xnp.pi, height + 1)
-  theta, phi = xnp.meshgrid(theta_vals, phi_vals, indexing='xy')
-
-  # Spherical coordinates in camera reference frame (y is up).
-  directions = xnp.stack([
-      -xnp.sin(phi) * xnp.sin(theta),
-      xnp.cos(phi),
-      xnp.sin(phi) * xnp.cos(theta),
-  ],
-                         axis=-1)
-
-  # For jax, need to specify high-precision matmul.
-  matmul = math.matmul if xnp == jt else xnp.matmul
-  directions = matmul(camtoworld[:3, :3], directions[..., None])[..., 0]
-
-  dy = xnp.diff(directions[:, :-1], axis=0)
-  dx = xnp.diff(directions[:-1, :], axis=1)
-  directions = directions[:-1, :-1]
-  viewdirs = directions
-
-  origins = xnp.broadcast_to(camtoworld[:3, -1], directions.shape)
-
-  dx_norm = xnp.linalg.norm(dx, axis=-1)
-  dy_norm = xnp.linalg.norm(dy, axis=-1)
-  radii = (0.5 * (dx_norm + dy_norm))[..., None] * 2 / xnp.sqrt(12)
-
-  imageplane = xnp.zeros_like(directions[..., :2])
-
-  ray_args = (origins, directions, viewdirs, radii, imageplane)
-
-  broadcast_scalar = lambda x: xnp.broadcast_to(x, radii.shape[:-1])[..., None]
-  ray_kwargs = {
-      'lossmult': broadcast_scalar(1.),
-      'near': broadcast_scalar(near),
-      'far': broadcast_scalar(far),
-      'cam_idx': broadcast_scalar(0),
-  }
-
-  return utils.Rays(*ray_args, **ray_kwargs)
+# delete all cast rays. Use JNerf way instead.

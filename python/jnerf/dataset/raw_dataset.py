@@ -14,14 +14,14 @@ import numpy as np
 from jnerf.utils.registry import DATASETS
 from jnerf.utils.miputils import *
 from .dataset_util import *
-from jnerf.utils import camera_utils
+from jnerf.utils import camera_utils, rawutils
 from jnerf.utils.config import get_cfg, save_cfg
 from jnerf.dataset.dataset import MipNerfDataset
 
 # TODO: add pycolmal from JAX.
 import sys
-sys.path.insert(0,'internal/pycolmap')
-sys.path.insert(0,'internal/pycolmap/pycolmap')
+sys.path.insert(0,'python/jnerf/dataset/pycolmap')
+sys.path.insert(0,'python/jnerf/dataset/pycolmap/pycolmap')
 import pycolmap
 
 class NeRFSceneManager(pycolmap.SceneManager):
@@ -120,8 +120,8 @@ class NeRFSceneManager(pycolmap.SceneManager):
 
     return names, poses, pixtocam, params, camtype
 
+@DATASETS.register_module()
 class RawLLFF(MipNerfDataset):
-  """RawLLFF Dataset."""
     def __init__(self,root_dir, batch_size, mode='train', H=0, W=0, near=0., far=1., correct_pose=[1,-1,-1], aabb_scale=None, offset=None, img_alpha=True, have_img=True, preload_shuffle=True):
         super().__init__(root_dir, batch_size, mode, H, W, near, far, correct_pose, aabb_scale, offset, img_alpha, have_img, preload_shuffle, True) # not load data in previous way.
         self.cfg = get_cfg()
@@ -142,15 +142,15 @@ class RawLLFF(MipNerfDataset):
             factor = 1
 
         # Copy COLMAP data to local disk for faster loading.
-        colmap_dir = os.path.join(self.data_dir, 'sparse/0/')
+        colmap_dir = os.path.join(self.root_dir, 'sparse/0/')
 
         # Load poses.
-        if utils.file_exists(colmap_dir):
+        if os.path.exists(colmap_dir):
             pose_data = NeRFSceneManager(colmap_dir).process()
         else:
             # Attempt to load Blender/NGP format if COLMAP data not present.
-            pose_data = load_blender_posedata(self.data_dir)
-            image_names, poses, pixtocam, distortion_params, camtype = pose_data
+            pose_data = load_blender_posedata(self.root_dir)
+        image_names, poses, pixtocam, distortion_params, camtype = pose_data
 
         # Previous NeRF results were generated with images sorted by filename,
         # use this flag to ensure metrics are reported on the same test set.
@@ -169,18 +169,18 @@ class RawLLFF(MipNerfDataset):
         raw_testscene = False
         if self.rawnerf_mode:
         # Load raw images and metadata.
-            images, metadata, raw_testscene = raw_utils.load_raw_dataset(
-                self.split, # TODO: FIX SPLIT
-                self.data_dir,
+            images, metadata, raw_testscene = rawutils.load_raw_dataset(
+                self.mode, # TODO: FIX SPLIT
+                self.root_dir,
                 image_names,
                 self.cfg.exposure_percentile,
                 factor)
             self.metadata = metadata
 
         # Load bounds if possible (only used in forward facing scenes).
-        posefile = os.path.join(self.data_dir, 'poses_bounds.npy')
-        if utils.file_exists(posefile):
-            with utils.open_file(posefile, 'rb') as fp:
+        posefile = os.path.join(self.root_dir, 'poses_bounds.npy')
+        if os.path.exists(posefile):
+            with open(posefile, 'rb') as fp:
                 poses_arr = np.load(fp)
             bounds = poses_arr[:, -2:]
         else:
@@ -207,16 +207,16 @@ class RawLLFF(MipNerfDataset):
             # Rotate/scale poses to align ground with xy plane and fit to unit cube.
             poses, transform = camera_utils.transform_poses_pca(poses)
             self.colmap_to_world_transform = transform
-            if config.render_spline_keyframes is not None:
-                rets = camera_utils.create_render_spline_path(config, image_names,poses, self.exposures)
+            if self.cfg.render_spline_keyframes is not None:
+                rets = camera_utils.create_render_spline_path(self.cfg, image_names,poses, self.exposures)
                 self.spline_indices, self.render_poses, self.render_exposures = rets
             else:
                 # Automatically generated inward-facing elliptical render path.
                 self.render_poses = camera_utils.generate_ellipse_path(
                     poses,
-                    n_frames=config.render_path_frames,
-                    z_variation=config.z_variation,
-                    z_phase=config.z_phase)
+                    n_frames=self.cfg.render_path_frames,
+                    z_variation=self.cfg.z_variation,
+                    z_phase=self.cfg.z_phase)
 
         if raw_testscene:
             # For raw testscene, the first image sent to COLMAP has the same pose as

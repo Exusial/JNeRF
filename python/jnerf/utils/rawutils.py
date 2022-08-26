@@ -97,6 +97,7 @@ def bilinear_demosaic(bayer: _Array,
     # data has a few garbage columns/rows at the edges that must be discarded
     # anyway, so this does not matter in practice.
     # Horizontally interpolated values.
+    # print(z)
     zx = .5 * (z + xnp.roll(z, -1, axis=-1))
     # Vertically interpolated values.
     zy = .5 * (z + xnp.roll(z, -1, axis=-2))
@@ -128,7 +129,7 @@ def bilinear_demosaic(bayer: _Array,
   return rgb
 
 
-bilinear_demosaic_jax = jax.jit(lambda bayer: bilinear_demosaic(bayer, xnp=jnp))
+# bilinear_demosaic_jax = jax.jit(lambda bayer: bilinear_demosaic(bayer, xnp=jnp))
 
 
 def load_raw_images(image_dir: str,
@@ -148,15 +149,15 @@ def load_raw_images(image_dir: str,
     ValueError: The requested `image_dir` does not exist on disk.
   """
 
-  if not utils.file_exists(image_dir):
+  if not os.path.exists(image_dir):
     raise ValueError(f'Raw image folder {image_dir} does not exist.')
 
   # Load raw images (dng files) and exif metadata (json files).
   def load_raw_exif(image_name):
     base = os.path.join(image_dir, os.path.splitext(image_name)[0])
-    with utils.open_file(base + '.dng', 'rb') as f:
+    with open(base + '.dng', 'rb') as f:
       raw = rawpy.imread(f).raw_image
-    with utils.open_file(base + '.json', 'rb') as f:
+    with open(base + '.json', 'rb') as f:
       exif = json.load(f)[0]
     return raw, exif
 
@@ -287,7 +288,7 @@ def load_raw_dataset(split: str,
   image_dir = os.path.join(data_dir, 'raw')
 
   testimg_file = os.path.join(data_dir, 'hdrplus_test/merged.dng')
-  testscene = utils.file_exists(testimg_file)
+  testscene = os.path.exists(testimg_file)
   if testscene:
     # Test scenes have train/ and test/ split subdirectories inside raw/.
     image_dir = os.path.join(image_dir, split)
@@ -300,10 +301,9 @@ def load_raw_dataset(split: str,
 
   raws, exifs = load_raw_images(image_dir, image_names)
   meta = process_exif(exifs)
-
   if testscene and split == 'test':
     # Test split for test scene must load the "ground truth" HDR+ merged image.
-    with utils.open_file(testimg_file, 'rb') as imgin:
+    with open(testimg_file, 'rb') as imgin:
       testraw = rawpy.imread(imgin).raw_image
     # HDR+ output has 2 extra bits of fixed precision, need to divide by 4.
     testraw = testraw.astype(np.float32) / 4.
@@ -337,10 +337,9 @@ def load_raw_dataset(split: str,
   blacklevel = meta['BlackLevel'].reshape(-1, 1, 1)
   whitelevel = meta['WhiteLevel'].reshape(-1, 1, 1)
   images = (raws - blacklevel) / (whitelevel - blacklevel) * shutter_ratio
-
   # Calculate value for exposure level when gamma mapping, defaults to 97%.
   # Always based on full resolution image 0 (for consistency).
-  image0_raw_demosaic = bilinear_demosaic(images[0], jt)
+  image0_raw_demosaic = bilinear_demosaic(images[0], np)
   image0_rgb = image0_raw_demosaic @ meta['cam2rgb'][0].T
   exposure = np.percentile(image0_rgb, exposure_percentile)
   meta['exposure'] = exposure
@@ -356,11 +355,11 @@ def load_raw_dataset(split: str,
   # if needed. Moving array to device + running processing function in Jax +
   # copying back to CPU is faster than running directly on CPU.
   def processing_fn(x):
-    x_jax = jnp.array(x)
-    x_demosaic_jax = bilinear_demosaic(x_jax, jt)
+    x_jax = x
+    x_demosaic_jax = bilinear_demosaic(x_jax, np)
     if n_downsample > 1:
       x_demosaic_jax = downsample(x_demosaic_jax, n_downsample)
-    return x_demosaic_jax.numpy()
+    return x_demosaic_jax
   images = np.stack([processing_fn(im) for im in images], axis=0)
 
   return images, meta, testscene

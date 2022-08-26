@@ -15,7 +15,7 @@ optim = dict(
 )
 
 dataset_type = 'RawLLFF'
-dataset_dir = '/home/penghy/nerf_data/nerf_synthetic/lego'
+dataset_dir = '/data/rawnerf/scenes/nightstreet'
 dataset = dict(
     train=dict(
         type=dataset_type,
@@ -89,4 +89,11 @@ linearlog=dict(
 enable_raw = True
 learned_exposure_scaling = False
 num_glo_embeddings = 1000
-render_path = False
+render_path = True
+render_spline_keyframes = None
+render_path_frames = 10
+z_variation = 0.
+z_phase = 0.
+raw_testscene = False
+factor = 4
+exposure_percentile = 97.
