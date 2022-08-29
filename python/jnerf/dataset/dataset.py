@@ -313,6 +313,7 @@ class MipNerfDataset():
             self.image_data = self.image_data[rand_idx]
             self.idx_now = 0
         img_ids = self.img_ids[self.idx_now:self.idx_now+self.batch_size, 0].int()
+        print(rays.origin.shape)
         rays = namedtuple_map(lambda r:jt.array(r[self.idx_now:self.idx_now+self.batch_size]), self.rays)
         rgb_target = self.image_data[self.idx_now:self.idx_now+self.batch_size]
         self.idx_now+=self.batch_size
@@ -415,12 +416,14 @@ class MipNerfDataset():
             self.image_data=jt.concat([self.image_data,jt.ones(self.image_data.shape[:-1]+(1,))],-1).stop_grad()
         if self.preload_shuffle:
             self.ori_image_data = self.image_data.copy().reshape(self.n_images, -1, 4).stop_grad()
-            self._generate_rays()
             if self.n_images > 1:
                 self.img_ids=jt.linspace(0,self.n_images-1,self.n_images).unsqueeze(-1).repeat(self.H*self.W).reshape(self.n_images*self.H*self.W,-1)
             else:
                 self.img_ids=jt.array([0]).unsqueeze(-1).repeat(self.H*self.W).reshape(self.n_images*self.H*self.W,-1)
-            self.rays.cam_idx = self.img_ids
+            if get_cfg().enable_raw:
+                self.img_ids = self.img_ids.reshape(self.n_images, self.H, self.W, -1)
+            self._generate_rays()
+            # self.rays.cam_idx = self.img_ids
             self.image_data = self.image_data.reshape(self.n_images*self.H*self.W, -1)
             self.rays = namedtuple_map(lambda r: r.reshape(self.n_images*self.H*self.W, -1), self.rays)
 
@@ -440,12 +443,11 @@ class MipNerfDataset():
         camera_dirs = jt.stack(
             [(x - self.W * 0.5 + 0.5) / self.focal_lengths[0],
             -(y - self.H * 0.5 + 0.5) / self.focal_lengths[1], -jt.ones_like(x)],
-            -1)
+            -1) 
         directions = ((camera_dirs[None, ..., None, :] *
                     self.transforms_gpu[:, None, None, :3, :3]).sum(-1))
-        origins = self.transforms_gpu[:, None, None, :3, -1].broadcast(
-                                directions.shape)
-
+        print("directions: ", directions.shape, camera_dirs.shape, self.transforms_gpu.shape)
+        origins = self.transforms_gpu[:, None, None, :3, -1].broadcast(directions.shape)
         viewdirs = directions / jt.norm(directions, dim=-1, keepdim=True)
 
         # Distance from each unit-norm direction vector to its x-axis neighbor.
@@ -455,15 +457,18 @@ class MipNerfDataset():
         # Cut the distance in half, and then round it out so that it's
         # halfway between inscribed by / circumscribed about the pixel.
         radii = dx[..., None] * 2 / jt.sqrt(12)
-        origin_shape = (origins.shape[0], 1)
         ones = jt.ones_like(origins[..., :1]).numpy()
-        imageplanes = None
-        n_img = origins.shpae[0] // (self.H * self.W)
+        n_img = origins.shape[0] // (self.H * self.W)
+        exposure_idx = jt.zeros_like(ones)
+        exposure_values = jt.zeros_like(ones)
         if self.metadata is not None:
             for cam_idx in range(n_img):
+                print(n_img)
                 # Exposure index and relative shutter speed, needed for RawNeRF.
                 ori_exposure_idx = self.metadata['exposure_idx']
                 ori_exposure_values = self.metadata['exposure_value']
+                print(ori_exposure_idx)
+                print(ori_exposure_values)
                 exposure_idx = ori_exposure_idx.repeat(self.H * self.W, -1).reshape(origins.shape[0], 1)
                 exposure_values = ori_exposure_values.repeat(self.H * self.W, -1).reshape(origins.shape[0], 1)
         if self.exposures is not None:
@@ -475,11 +480,10 @@ class MipNerfDataset():
             directions=directions.numpy(),
             viewdirs=viewdirs.numpy(),
             radii=radii.numpy(),
-            imageplane=imageplanes,
             lossmult=ones,
             near=ones * self.near,
             far=ones * self.far,
-            cam_idx=None,
+            cam_idx=self.img_ids,
             exposure_idx=exposure_idx.numpy(),
             exposure_values=exposure_values.numpy())
 
@@ -518,13 +522,13 @@ class MipNerfDataset():
         ones = jt.ones_like(origins[..., :1])
         imageplanes = None
         n_img = origins.shpae[0] // (self.H * self.W)
-        if self.metadata is not None:
-            for cam_idx in range(n_img):
-                # Exposure index and relative shutter speed, needed for RawNeRF.
-                ori_exposure_idx = self.metadata['exposure_idx']
-                ori_exposure_values = self.metadata['exposure_value']
-                exposure_idx = ori_exposure_idx.repeat(self.H * self.W, -1).reshape(origins.shape[0], 1)
-                exposure_values = ori_exposure_values.repeat(self.H * self.W, -1).reshape(origins.shape[0], 1)
+        # if self.metadata is not None:
+        #     for cam_idx in range(n_img):
+        #         # Exposure index and relative shutter speed, needed for RawNeRF.
+        #         ori_exposure_idx = self.metadata['exposure_idx']
+        #         ori_exposure_values = self.metadata['exposure_value']
+        #         exposure_idx = ori_exposure_idx.repeat(self.H * self.W, -1).reshape(origins.shape[0], 1)
+        #         exposure_values = ori_exposure_values.repeat(self.H * self.W, -1).reshape(origins.shape[0], 1)
         if self.exposures is not None:
             exposure_values = self.exposures.repeat(self.H * self.W, -1).reshape(origins.shape[0], 1)
         if self.render_path and self.render_exposures is not None:

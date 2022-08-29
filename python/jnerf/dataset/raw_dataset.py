@@ -128,6 +128,7 @@ class RawLLFF(MipNerfDataset):
         self._load_renderings()
         jt.gc()
 
+
     def _load_renderings(self):
         """Load images from disk."""
         # Set up scaling factor.
@@ -137,7 +138,7 @@ class RawLLFF(MipNerfDataset):
         if self.cfg.factor > 0 and not (self.rawnerf_mode and
                                     self.mode == 'train'):
             image_dir_suffix = f'_{self.cfg.factor}'
-            factor = self.cfg
+            factor = self.cfg.factor
         else:
             factor = 1
 
@@ -162,7 +163,7 @@ class RawLLFF(MipNerfDataset):
         # Scale the inverse intrinsics matrix by the image downsampling factor.
         pixtocam = pixtocam @ np.diag([factor, factor, 1.])
         self.pixtocams = pixtocam.astype(np.float32)
-        self.focal_lengths = 1. / self.pixtocams[0, 0]
+        self.focal_lengths = [1. / self.pixtocams[0, 0], 1. / self.pixtocams[0, 0]]
         self.distortion_params = distortion_params
         self.camtype = camtype
 
@@ -226,7 +227,7 @@ class RawLLFF(MipNerfDataset):
                 'train': poses[1:],
             }
             poses = raw_testscene_poses[self.mode]
-
+        poses = poses[:2]
         self.poses = poses
 
         # Select the split.
@@ -237,12 +238,13 @@ class RawLLFF(MipNerfDataset):
             train_indices = all_indices % self.cfg.llffhold != 0
         split_indices = {
             'test': all_indices[all_indices % self.cfg.llffhold == 0],
-            'train': train_indices,
+            'train': all_indices[train_indices],
         }
+        print("split_indices: ", split_indices)
         indices = split_indices[self.mode]
         # All per-image quantities must be re-indexed using the split indices.
         if self.preload_shuffle:
-            indices = indices[np.randperm(0, indices.shape[0])]
+            indices = indices[jt.randperm(indices.shape[0]).numpy()]
         images = images[indices]
         poses = poses[indices]
         if self.exposures is not None:
@@ -250,10 +252,15 @@ class RawLLFF(MipNerfDataset):
         if self.rawnerf_mode:
             for key in ['exposure_idx', 'exposure_values']:
                 self.metadata[key] = self.metadata[key][indices]
-
+        # TODO: simtaneously generate train/test dataset in this function
+        self.n_images = images.shape[0]
         self.image_data = images
         # compared to transform gpu
         self.transforms_gpu = self.render_poses if self.cfg.render_path else poses
+        self.transforms_gpu = jt.array(self.transforms_gpu)[indices]
         self.H, self.W = images.shape[1:3]
-        self.img_ids = jt.array(np.arange(indices.shape[0]))
+        self.img_ids = jt.array(np.arange(self.n_images)[None,...].reshape(self.n_images, 1).repeat(self.H*self.W, 1))
+        self.img_ids = self.img_ids.reshape(self.n_images, self.H, self.W).unsqueeze(-1)
         self._generate_rays()
+        print(list(map(lambda r: r.shape, self.rays)))
+        self.rays = namedtuple_map(lambda r: r.reshape(self.n_images*self.H*self.W, -1), self.rays)

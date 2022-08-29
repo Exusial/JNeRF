@@ -364,7 +364,6 @@ def load_raw_dataset(split: str,
       x_demosaic_jax = downsample(x_demosaic_jax, n_downsample)
     return x_demosaic_jax
   images = np.stack([processing_fn(im) for im in images], axis=0)
-
   return images, meta, testscene
 
 

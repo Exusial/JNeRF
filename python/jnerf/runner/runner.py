@@ -25,7 +25,7 @@ class Runner():
         self.dataset            = {}
         self.dataset["train"]   = build_from_cfg(self.cfg.dataset.train, DATASETS)
         self.cfg.dataset_obj    = self.dataset["train"]
-        if self.cfg.dataset.val:
+        if self.cfg.dataset.val and not self.cfg.enable_raw:
             self.dataset["val"] = build_from_cfg(self.cfg.dataset.val, DATASETS)
         else:
             self.dataset["val"] = self.dataset["train"]
