@@ -1,5 +1,6 @@
 import os
 import jittor as jt
+from jittor import nn
 from PIL import Image
 import numpy as np
 from tqdm import tqdm
@@ -304,7 +305,7 @@ class MipRunner():
         # MIPNERF PARAMS
         self.white_bkgd = self.cfg.white_bkgd
         self.num_levels = self.cfg.num_levels
-        self.coarse_loss_mult = self.cfg.coarse_loss_mult
+        self.coarse_loss_mult = float(self.cfg.coarse_loss_mult)
         self.disable_multiscale_loss = self.cfg.disable_multiscale_loss
         self.rawnerf_mode = self.cfg.enable_raw
         self.learned_exposure_scaling = self.cfg.learned_exposure_scaling
@@ -320,20 +321,22 @@ class MipRunner():
         ret = []
         t_vals, weights = None, None
         for i_level in range(self.num_levels):
+            jt.sync_all()
             samples_enc, viewdirs_enc, t_vals = self.sampler.sample(img_ids, rays, i_level, t_vals, weights)
             raw_rgb, raw_density = self.model(samples_enc, viewdirs_enc)
-            # print("ret:", raw_rgb, raw_density)
             # print(rgb, density)
-            if rays.exposure_idx is not None:
+            if self.rawnerf_mode and rays.exposure_idx is not None:
                 # Scale output colors by the exposure.
                 raw_rgb *= rays.exposure_values[..., None, :]
                 if self.learned_exposure_scaling:
                     exposure_idx = rays.exposure_idx[..., 0]
                 # Force scaling offset to always be zero when exposure_idx is 0.
                 # This constraint fixes a reference point for the scene's brightness.
-                mask = exposure_idx > 0
+                mask = rays.exposure_idx > 0 
                 # Scaling is parameterized as an offset from 1.
-                scaling = 1 + mask[..., None] * self.exposure_scaling_offsets(exposure_idx)
+                embed_value = self.exposure_scaling_offsets(exposure_idx)
+                # scaling = 1 + mask[..., None] * embed_value
+                scaling = 1 + mask * embed_value
                 raw_rgb *= scaling[..., None, :]
             comp_rgb, distance, acc, weights = self.sampler.rays2rgb(rays, raw_rgb, raw_density, t_vals)
             # print("rgb", comp_rgb, distance, acc, weights)
@@ -345,22 +348,25 @@ class MipRunner():
             self.cfg.m_training_step = i
             img_ids, rays, rgb_target = next(self.dataset["train"])
             ret = self.get_rgb_density(img_ids, rays)
+            print(rays.exposure_values.dtype)
             mask = rays.lossmult
             if self.disable_multiscale_loss:
                 mask = jt.ones_like(mask)
             # all level's results will contribute to final loss
             # training_background_color = jt.random([rgb_target.shape[0],3]).stop_grad()
             # rgb_target = (rgb_target[..., :3] * rgb_target[..., 3:] + training_background_color * (1 - rgb_target[..., 3:])).detach()
-            rgb_target = rgb_target[..., :3] * rgb_target[..., 3:]
+            if rgb_target.shape[-1] > 3: # with alpha channel
+                rgb_target = rgb_target[..., :3] * rgb_target[..., 3:]
             loss = []
-
             for (rgb, _, _) in ret:
+                print(rgb.dtype, rgb_target.dtype, mask.dtype)
                 loss.append(self.loss_func(rgb, rgb_target) / mask.sum())
-
             loss = self.coarse_loss_mult * jt.sum(loss[:-1]) + loss[-1]
             # print("rgb: ", rgb_target, rgb)
             # print("loss: ", loss)
+            jt.sync_all()
             self.optimizer.step(loss)
+            jt.sync_all()
             if self.using_fp16:
                 self.model.set_fp16()
             if i>0 and i%self.val_freq==0:

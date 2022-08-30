@@ -20,15 +20,8 @@ dataset = dict(
     train=dict(
         type=dataset_type,
         root_dir=dataset_dir,
-        batch_size=4096,
+        batch_size=1024,
         mode='train',
-    ),
-    val=dict(
-        type=dataset_type,
-        root_dir=dataset_dir,
-        batch_size=4096,
-        mode='val',
-        preload_shuffle=False,
     ),
     test=dict(
         type=dataset_type,
@@ -87,7 +80,7 @@ linearlog=dict(
     lr_delay_mult=0.01,
 )
 enable_raw = True
-learned_exposure_scaling = False
+learned_exposure_scaling = True
 num_glo_embeddings = 1000
 render_path = True
 render_spline_keyframes = None

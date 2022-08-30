@@ -249,6 +249,7 @@ def integrated_pos_enc(x_coord, min_deg, max_deg, diag=True):
     """
     if diag:
         x, x_cov_diag = x_coord
+        jt.sync_all()
         scales = jt.array([2**i for i in range(min_deg, max_deg)])
         shape = list(x.shape[:-1]) + [-1]
         jt.sync_all()

@@ -102,7 +102,6 @@ class MipNerfMLP(nn.Module):
             x = jt.concat([bottleneck, condition], -1)
             # Here use 1 extra layer to align with the original nerf model.
             x = self.condition(x)
-            
             raw_rgb = self.rgb_condition(x).reshape((-1, self.num_samples, self.num_rgb_channels))
         else:
             raw_rgb = self.rgb_layer(x).reshape((-1, self.num_samples, self.num_rgb_channels))

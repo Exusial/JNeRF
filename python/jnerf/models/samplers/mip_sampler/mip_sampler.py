@@ -56,6 +56,7 @@ class MipSampler():
                 self.stop_level_grad,
                 resample_padding=self.resample_padding,
             )
+        jt.sync_all()
         samples_enc = integrated_pos_enc(
                 samples,
                 self.min_deg_point,

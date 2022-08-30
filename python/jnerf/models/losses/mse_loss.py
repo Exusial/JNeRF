@@ -23,4 +23,4 @@ class RawNerfMSELoss(nn.Module):
         rgb_clip = jt.minimum(1., x)
         mse = (rgb_clip - target)**2
         scaling_grad = 1. / (1e-3 + rgb_clip.detach())
-        return mse * scaling_grad**2
+        return jt.mean(mse * scaling_grad**2)

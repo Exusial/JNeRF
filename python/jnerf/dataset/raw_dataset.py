@@ -177,7 +177,7 @@ class RawLLFF(MipNerfDataset):
                 self.cfg.exposure_percentile,
                 factor)
             self.metadata = metadata
-        print("finish load.")
+        print("finish load. rawtestscene is ", raw_testscene)
         # Load bounds if possible (only used in forward facing scenes).
         posefile = os.path.join(self.root_dir, 'poses_bounds.npy')
         if os.path.exists(posefile):
@@ -259,8 +259,10 @@ class RawLLFF(MipNerfDataset):
         self.transforms_gpu = self.render_poses if self.cfg.render_path else poses
         self.transforms_gpu = jt.array(self.transforms_gpu)[indices]
         self.H, self.W = images.shape[1:3]
+        self.image_data = self.image_data.reshape(self.n_images*self.H*self.W, 3).astype("float32")
         self.img_ids = jt.array(np.arange(self.n_images)[None,...].reshape(self.n_images, 1).repeat(self.H*self.W, 1))
         self.img_ids = self.img_ids.reshape(self.n_images, self.H, self.W).unsqueeze(-1)
         self._generate_rays()
         print(list(map(lambda r: r.shape, self.rays)))
         self.rays = namedtuple_map(lambda r: r.reshape(self.n_images*self.H*self.W, -1), self.rays)
+        self.img_ids = self.img_ids.reshape(self.n_images*self.H*self.W, 1)

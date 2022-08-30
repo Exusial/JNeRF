@@ -312,11 +312,12 @@ class MipNerfDataset():
             self.rays = namedtuple_map(lambda r:r[rand_idx], self.rays)
             self.image_data = self.image_data[rand_idx]
             self.idx_now = 0
+        print("img_ids: ", self.img_ids.shape)
         img_ids = self.img_ids[self.idx_now:self.idx_now+self.batch_size, 0].int()
-        print(rays.origin.shape)
         rays = namedtuple_map(lambda r:jt.array(r[self.idx_now:self.idx_now+self.batch_size]), self.rays)
         rgb_target = self.image_data[self.idx_now:self.idx_now+self.batch_size]
         self.idx_now+=self.batch_size
+        print("iteration shape: ", rays.origins.shape, rays.directions.shape)
         return img_ids, rays, rgb_target
         
     def load_data(self,root_dir=None):
