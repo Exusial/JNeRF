@@ -444,7 +444,7 @@ class MipNerfDataset():
             np.arange(self.H, dtype=np.float32),  # Y-Axis (rows)
             indexing='xy'))
         # print(self.focal_lengths)
-        print(x, y)
+        # print(x, y)
         if self.pixtocams is None:
             camera_dirs = jt.stack(
                 [(x - self.W * 0.5 + 0.5) / self.focal_lengths[0],
@@ -455,21 +455,25 @@ class MipNerfDataset():
                 [(x + 0.5) / self.focal_lengths[0] + self.pixtocams[0,2],
                 -((y + 0.5) / self.focal_lengths[1] + self.pixtocams[1,2]), -jt.ones_like(x)],
                 -1) 
-        print("camera dirs:", camera_dirs[:,:1024], self.focal_lengths)
+        print(x.shape, camera_dirs.shape)
+        # print("camera dirs:", camera_dirs[:,:1024], self.focal_lengths)
         # add distortion support
+        camera_dirs = camera_dirs.reshape(-1, 3)
         if self.distortion_params is not None:
+            print(camera_dirs.shape)
             x, y = _radial_and_tangential_undistort(
                 camera_dirs[..., 0],
                 camera_dirs[..., 1],
                 **self.distortion_params,
                 xnp=jt)
+            # print(x, y)
             jt.sync_all()
             camera_dirs = jt.stack([x, y, jt.ones_like(x)], -1)
-        directions = ((camera_dirs[None, ..., None, :] * self.transforms_gpu[:, None, None, :3, :3]).sum(-1))
-        # print(directions)
+        # print(camera_dirs, self.transforms_gpu)
+        directions = ((self.transforms_gpu[:, None, None, :3, :3] * camera_dirs[None, ..., None, :]).sum(-1))
         origins = self.transforms_gpu[:, None, None, :3, -1].broadcast(directions.shape)
+        # print(origins[:1024], directions[:1024])
         viewdirs = directions / jt.norm(directions, dim=-1, keepdim=True)
-        exit(0)
         # Distance from each unit-norm direction vector to its x-axis neighbor.
         dx = jt.sqrt(
             jt.sum((directions[:, :-1, :, :] - directions[:, 1:, :, :])**2, -1))
@@ -506,6 +510,7 @@ class MipNerfDataset():
             cam_idx=self.img_ids,
             exposure_idx=exposure_idx.numpy(),
             exposure_values=exposure_values.numpy())
+        exit(0)
 
     def generate_rays_total_test(self, img_ids, H, W):
         """Generating rays for all testing images."""
