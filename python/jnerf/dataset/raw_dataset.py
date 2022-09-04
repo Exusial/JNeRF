@@ -163,7 +163,7 @@ class RawLLFF(MipNerfDataset):
         # Scale the inverse intrinsics matrix by the image downsampling factor.
         pixtocam = pixtocam @ np.diag([factor, factor, 1.])
         self.pixtocams = pixtocam.astype(np.float32)
-        self.focal_lengths = [1. / self.pixtocams[0, 0], 1. / self.pixtocams[0, 0]]
+        self.focal_lengths = [1. / self.pixtocams[0, 0], 1. / self.pixtocams[1, 1]]
         self.distortion_params = distortion_params
         self.camtype = camtype
 
@@ -177,7 +177,6 @@ class RawLLFF(MipNerfDataset):
                 self.cfg.exposure_percentile,
                 factor)
             self.metadata = metadata
-        print("finish load. rawtestscene is ", raw_testscene)
         # Load bounds if possible (only used in forward facing scenes).
         posefile = os.path.join(self.root_dir, 'poses_bounds.npy')
         if os.path.exists(posefile):
@@ -229,7 +228,6 @@ class RawLLFF(MipNerfDataset):
             poses = raw_testscene_poses[self.mode]
         poses = poses[:2]
         self.poses = poses
-
         # Select the split.
         all_indices = np.arange(images.shape[0])
         if self.cfg.llff_use_all_images_for_training or raw_testscene:
@@ -240,7 +238,6 @@ class RawLLFF(MipNerfDataset):
             'test': all_indices[all_indices % self.cfg.llffhold == 0],
             'train': all_indices[train_indices],
         }
-        print("split_indices: ", split_indices)
         indices = split_indices[self.mode]
         # All per-image quantities must be re-indexed using the split indices.
         if self.preload_shuffle:
@@ -256,13 +253,13 @@ class RawLLFF(MipNerfDataset):
         self.n_images = images.shape[0]
         self.image_data = images
         # compared to transform gpu
-        self.transforms_gpu = self.render_poses if self.cfg.render_path else poses
-        self.transforms_gpu = jt.array(self.transforms_gpu)[indices]
+        self.transforms_gpu = self.render_poses[indices] if self.cfg.render_path else poses
+        self.transforms_gpu = jt.array(self.transforms_gpu)
         self.H, self.W = images.shape[1:3]
         self.image_data = self.image_data.reshape(self.n_images*self.H*self.W, 3).astype("float32")
         self.img_ids = jt.array(np.arange(self.n_images)[None,...].reshape(self.n_images, 1).repeat(self.H*self.W, 1))
         self.img_ids = self.img_ids.reshape(self.n_images, self.H, self.W).unsqueeze(-1)
         self._generate_rays()
-        print(list(map(lambda r: r.shape, self.rays)))
+        # print(list(map(lambda r: r.shape, self.rays)))
         self.rays = namedtuple_map(lambda r: r.reshape(self.n_images*self.H*self.W, -1), self.rays)
         self.img_ids = self.img_ids.reshape(self.n_images*self.H*self.W, 1)

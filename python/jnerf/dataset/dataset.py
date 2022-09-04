@@ -13,6 +13,7 @@ import numpy as np
 from jnerf.utils.config import get_cfg, save_cfg
 from jnerf.utils.registry import DATASETS
 from jnerf.utils.miputils import *
+from jnerf.utils.camera_utils import _radial_and_tangential_undistort
 from .dataset_util import *
 
 @DATASETS.register_module()
@@ -294,10 +295,12 @@ class MipNerfDataset():
         self.idx_now=0
         self.near = near
         self.far = far
+        self.distortion_params = None
         self.exposures = None
         self.render_exposures = None
         self.render_path = get_cfg().render_path
         self.rawnerf_mode = get_cfg().enable_raw
+        self.pixtocams = None # for rawnerf llff
         if not abstract:
             self.load_data()
         jt.gc()
@@ -312,12 +315,12 @@ class MipNerfDataset():
             self.rays = namedtuple_map(lambda r:r[rand_idx], self.rays)
             self.image_data = self.image_data[rand_idx]
             self.idx_now = 0
-        print("img_ids: ", self.img_ids.shape)
         img_ids = self.img_ids[self.idx_now:self.idx_now+self.batch_size, 0].int()
         rays = namedtuple_map(lambda r:jt.array(r[self.idx_now:self.idx_now+self.batch_size]), self.rays)
         rgb_target = self.image_data[self.idx_now:self.idx_now+self.batch_size]
         self.idx_now+=self.batch_size
-        print("iteration shape: ", rays.origins.shape, rays.directions.shape)
+        print("origin", rays.origins)
+        print("directions", rays.directions)
         return img_ids, rays, rgb_target
         
     def load_data(self,root_dir=None):
@@ -441,16 +444,32 @@ class MipNerfDataset():
             np.arange(self.H, dtype=np.float32),  # Y-Axis (rows)
             indexing='xy'))
         # print(self.focal_lengths)
-        camera_dirs = jt.stack(
-            [(x - self.W * 0.5 + 0.5) / self.focal_lengths[0],
-            -(y - self.H * 0.5 + 0.5) / self.focal_lengths[1], -jt.ones_like(x)],
-            -1) 
-        directions = ((camera_dirs[None, ..., None, :] *
-                    self.transforms_gpu[:, None, None, :3, :3]).sum(-1))
-        print("directions: ", directions.shape, camera_dirs.shape, self.transforms_gpu.shape)
+        print(x, y)
+        if self.pixtocams is None:
+            camera_dirs = jt.stack(
+                [(x - self.W * 0.5 + 0.5) / self.focal_lengths[0],
+                -(y - self.H * 0.5 + 0.5) / self.focal_lengths[1], -jt.ones_like(x)],
+                -1) 
+        else:
+            camera_dirs = jt.stack(
+                [(x + 0.5) / self.focal_lengths[0] + self.pixtocams[0,2],
+                -((y + 0.5) / self.focal_lengths[1] + self.pixtocams[1,2]), -jt.ones_like(x)],
+                -1) 
+        print("camera dirs:", camera_dirs[:,:1024], self.focal_lengths)
+        # add distortion support
+        if self.distortion_params is not None:
+            x, y = _radial_and_tangential_undistort(
+                camera_dirs[..., 0],
+                camera_dirs[..., 1],
+                **self.distortion_params,
+                xnp=jt)
+            jt.sync_all()
+            camera_dirs = jt.stack([x, y, jt.ones_like(x)], -1)
+        directions = ((camera_dirs[None, ..., None, :] * self.transforms_gpu[:, None, None, :3, :3]).sum(-1))
+        # print(directions)
         origins = self.transforms_gpu[:, None, None, :3, -1].broadcast(directions.shape)
         viewdirs = directions / jt.norm(directions, dim=-1, keepdim=True)
-
+        exit(0)
         # Distance from each unit-norm direction vector to its x-axis neighbor.
         dx = jt.sqrt(
             jt.sum((directions[:, :-1, :, :] - directions[:, 1:, :, :])**2, -1))

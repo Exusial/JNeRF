@@ -348,7 +348,6 @@ class MipRunner():
             self.cfg.m_training_step = i
             img_ids, rays, rgb_target = next(self.dataset["train"])
             ret = self.get_rgb_density(img_ids, rays)
-            print(rays.exposure_values.dtype)
             mask = rays.lossmult
             if self.disable_multiscale_loss:
                 mask = jt.ones_like(mask)
@@ -359,7 +358,6 @@ class MipRunner():
                 rgb_target = rgb_target[..., :3] * rgb_target[..., 3:]
             loss = []
             for (rgb, _, _) in ret:
-                print(rgb.dtype, rgb_target.dtype, mask.dtype)
                 loss.append(self.loss_func(rgb, rgb_target) / mask.sum())
             loss = self.coarse_loss_mult * jt.sum(loss[:-1]) + loss[-1]
             # print("rgb: ", rgb_target, rgb)
@@ -369,6 +367,8 @@ class MipRunner():
             jt.sync_all()
             if self.using_fp16:
                 self.model.set_fp16()
+            if i == 2:
+                exit(0)
             if i>0 and i%self.val_freq==0:
                 psnr=mse2psnr(self.val_img(i))
                 print("STEP={} | LOSS={} | VAL PSNR={}".format(i,loss.mean().item(), psnr))
