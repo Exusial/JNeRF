@@ -501,13 +501,16 @@ def _radial_and_tangential_undistort(
     denominator = fy_x * fx_y - fx_x * fy_y
     x_numerator = fx * fy_y - fy * fx_y
     y_numerator = fy * fx_x - fx * fy_x
+    print(denominator)
     step_x = xnp.where(
         xnp.abs(denominator) > eps, x_numerator / denominator,
         xnp.zeros_like(denominator))
     step_y = xnp.where(
         xnp.abs(denominator) > eps, y_numerator / denominator,
         xnp.zeros_like(denominator))
-
+    print(step_x)
+    print(step_y)
+    exit(0)
     x = x + step_x
     y = y + step_y
 
@@ -575,7 +578,7 @@ def pixels_to_rays(
 
   # Apply inverse intrinsic matrices.
   camera_dirs_stacked = mat_vec_mul(pixtocams, pixel_dirs_stacked)
-
+  print("distance: ", distortion_params)
   if distortion_params is not None:
     # Correct for distortion.
     x, y = _radial_and_tangential_undistort(
