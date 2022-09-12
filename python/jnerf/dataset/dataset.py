@@ -469,7 +469,6 @@ class MipNerfDataset():
             camera_dirs = jt.stack([x, y, jt.ones_like(x)], -1)
         directions = ((self.transforms_gpu[:, None, None, :3, :3] * camera_dirs[None, ..., None, :]).sum(-1))
         origins = self.transforms_gpu[:, None, None, :3, -1].broadcast(directions.shape)
-        print(origins[:1024], directions[:1024])
         viewdirs = directions / jt.norm(directions, dim=-1, keepdim=True)
         # Distance from each unit-norm direction vector to its x-axis neighbor.
         dx = jt.sqrt(
@@ -478,6 +477,7 @@ class MipNerfDataset():
         # Cut the distance in half, and then round it out so that it's
         # halfway between inscribed by / circumscribed about the pixel.
         radii = dx[..., None] * 2 / jt.sqrt(12)
+        print(viewdirs[:1024], radii[:1024])
         ones = jt.ones_like(origins[..., :1]).numpy()
         n_img = origins.shape[0] // (self.H * self.W)
         exposure_idx = jt.zeros_like(ones)
