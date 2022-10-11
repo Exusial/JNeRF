@@ -1,3 +1,4 @@
+
 import random
 import jittor as jt
 from jittor.dataset import Dataset
@@ -11,9 +12,10 @@ from tqdm import tqdm
 import numpy as np
 from jnerf.utils.registry import DATASETS
 from .dataset_util import *
+from jnerf.utils.config import get_cfg
 
 @DATASETS.register_module()
-class NerfDataset():
+class InfoNerfDataset():
     def __init__(self,root_dir, batch_size, mode='train', H=0, W=0, correct_pose=[1,-1,-1], aabb_scale=None, scale=None, offset=None, img_alpha=True,to_jt=True, have_img=True, preload_shuffle=True):
         self.root_dir=root_dir
         self.batch_size=batch_size
@@ -43,6 +45,14 @@ class NerfDataset():
         assert mode=="train" or mode=="val" or mode=="test"
         self.mode=mode
         self.idx_now=0
+        cfg = get_cfg()
+        self.use_viewdirs = cfg.use_viewdirs
+        self.fewshot = None
+        self.train_scene = None
+        if mode == "train" and cfg.fewshot:
+            self.fewshot = cfg.fewshot
+            if cfg.train_scene:
+                self.train_scene = train_scene
         self.load_data()
         jt.gc()
         self.image_data = self.image_data.reshape(
@@ -57,7 +67,13 @@ class NerfDataset():
         img_index=self.shuffle_index[self.idx_now:self.idx_now+self.batch_size]
         img_ids,rays_o,rays_d,rgb_target=self.generate_random_data(img_index,self.batch_size)
         self.idx_now+=self.batch_size
-        return img_ids, rays_o, rays_d, rgb_target
+        viewdirs = None
+        if self.use_viewdirs:
+            # provide ray directions as input
+            viewdirs = rays_d
+            viewdirs = viewdirs / jt.norm(viewdirs, dim=-1, keepdim=True)
+            viewdirs = viewdirs.reshape(-1,3)
+        return img_ids, rays_o, rays_d, rgb_target, viewdirs
         
     def load_data(self,root_dir=None):
         print(f"load {self.mode} data")
@@ -109,7 +125,14 @@ class NerfDataset():
             matrix=np.array(frame['transform_matrix'],np.float32)[:-1, :]
             self.transforms_gpu.append(
                             self.matrix_nerf2ngp(matrix, self.scale, self.offset))
-                           
+        if self.fewshot:
+            if self.train_scene:
+                inds = self.train_scene
+            else:
+                inds = np.random.randint(0, self.n_images, (self.fewshot))
+            self.n_images = self.fewshot
+            self.image_data = self.image_data[inds]
+            self.transforms_gpu = self.transforms_gpu[inds]
         self.resolution=[self.W,self.H]
         self.resolution_gpu=jt.array(self.resolution)
         metadata=np.empty([11],np.float32)
