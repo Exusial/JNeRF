@@ -4,7 +4,7 @@ from tqdm import tqdm
 import argparse
 import numpy as np
 import os
-from jnerf.runner import Runner,NeuSRunner
+from jnerf.runner import Runner,NeuSRunner,InfoRunner
 from jnerf.utils.config import init_cfg, get_cfg
 from jnerf.utils.registry import build_from_cfg,NETWORKS,SCHEDULERS,DATASETS,OPTIMS,SAMPLERS,LOSSES
 # jt.flags.gopt_disable=1
@@ -56,7 +56,7 @@ def main():
         init_cfg(args.config_file)
 
     if args.type == 'novel_view':
-        runner = Runner()
+        runner = InfoRunner()
     elif args.type == 'mesh':
         runner = NeuSRunner(is_continue=is_continue)
     else:

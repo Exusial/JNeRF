@@ -10,9 +10,9 @@ from jnerf.utils.registry import SAMPLERS
 def sample_pdf(bins, weights, N_samples, det=False, pytest=False):
     # Get pdf
     weights = weights + 1e-5 # prevent nans
-    pdf = weights / jt.sum(weights, -1, keepdim=True)
+    pdf = weights / jt.sum(weights, -1, keepdims=True)
     cdf = jt.cumsum(pdf, -1)
-    cdf = jt.cat([jt.zeros_like(cdf[...,:1]), cdf], -1)  # (batch, len(bins))
+    cdf = jt.concat([jt.zeros_like(cdf[...,:1]), cdf], -1)  # (batch, len(bins))
 
     # Take uniform samples
     if det:
@@ -33,10 +33,9 @@ def sample_pdf(bins, weights, N_samples, det=False, pytest=False):
         u = jt.array(u)
 
     # Invert CDF
-    # TODO: support CUDA??
     inds = jt.searchsorted(cdf, u, right=True)
-    below = jt.max(jt.zeros_like(inds-1), inds-1)
-    above = jt.min((cdf.shape[-1]-1) * jt.ones_like(inds), inds)
+    below = jt.maximum(jt.zeros_like(inds-1), inds-1)
+    above = jt.minimum((cdf.shape[-1]-1) * jt.ones_like(inds), inds)
     inds_g = jt.stack([below, above], -1)  # (batch, N_samples, 2)
 
     # cdf_g = tf.gather(cdf, inds_g, axis=-1, batch_dims=len(inds_g.shape)-2)
@@ -66,14 +65,14 @@ def raw2outputs(raw, z_vals, rays_d, raw_noise_std=0, white_bkgd=False, pytest=F
         weights: [num_rays, num_samples]. Weights assigned to each sampled color.
         depth_map: [num_rays]. Estimated distance to object.
     """
-    raw2alpha = lambda raw, dists, act_fn=F.relu: 1.-jt.exp(-act_fn(raw)*dists)
+
+    raw2alpha = lambda raw, dists, act_fn=nn.relu: 1.-jt.exp(-act_fn(raw)*dists)
     
     dists = z_vals[...,1:] - z_vals[...,:-1]
-    dists = jt.cat([dists, jt.array([1e10]).expand(dists[...,:1].shape)], -1)  # [N_rays, N_samples]
+    dists = jt.concat([dists, jt.array([1e10]).expand(dists[...,:1].shape)], -1)  # [N_rays, N_samples]
 
     dists = dists * jt.norm(rays_d[...,None,:], dim=-1)
-
-    rgb = jt.sigmoid(raw[...,:3])  # [N_rays, N_samples, 3]
+    rgb = jt.sigmoid(raw[...,:3])  # [N_rays, N_samples, 3]\
     noise = 0.
     if raw_noise_std > 0.:
         noise = jt.randn(raw[...,3].shape) * raw_noise_std
@@ -83,15 +82,18 @@ def raw2outputs(raw, z_vals, rays_d, raw_noise_std=0, white_bkgd=False, pytest=F
             np.random.seed(0)
             noise = np.random.rand(*list(raw[...,3].shape)) * raw_noise_std
             noise = jt.array(noise)
+    alpha = raw2alpha(raw[...,3] + noise, dists)  # [N_rays, N_samples]\
 
-    alpha = raw2alpha(raw[...,3] + noise, dists)  # [N_rays, N_samples]
-    sigma = F.relu(raw[...,3]+noise)
+    sigma = nn.relu(raw[...,3]+noise)
     # weights = alpha * tf.math.cumprod(1.-alpha + 1e-10, -1, exclusive=True)
-    weights = alpha * jt.cumprod(jt.cat([jt.ones((alpha.shape[0], 1)), 1.-alpha + 1e-10], -1), -1)[:, :-1]
+    weights = alpha * jt.cumprod(jt.concat([jt.ones((alpha.shape[0], 1)), 1.-alpha + 1e-8], -1), -1)[:, :-1]
+    # print("raw sum: ", raw.sum(-1))
+    # print("alpha sum: ", alpha.sum(-1))
+    # print("acc map: ", weights.sum(-1))
     rgb_map = jt.sum(weights[...,None] * rgb, -2)  # [N_rays, 3]
 
     depth_map = jt.sum(weights * z_vals, -1)
-    disp_map = 1./jt.max(1e-10 * jt.ones_like(depth_map), depth_map / jt.sum(weights, -1))
+    disp_map = 1./jt.maximum(1e-10 * jt.ones_like(depth_map), depth_map / jt.sum(weights, -1))
     acc_map = jt.sum(weights, -1)
     
     if white_bkgd:
@@ -118,7 +120,7 @@ def sample_sigma(rays_o, rays_d, viewdirs, network, z_vals):
     raw = network(pts, viewdirs, network)
 
     rgb = jt.sigmoid(raw[...,:3])  # [N_rays, N_samples, 3]
-    sigma = F.relu(raw[...,3])
+    sigma = nn.relu(raw[...,3])
 
     rgb_map, disp_map, acc_map, weights, depth_map = raw2outputs(raw, z_vals, rays_d)
 
@@ -139,7 +141,6 @@ class InfoSampler():
         self.using_fp16 = cfg.using_fp16
         self.near = cfg.near
         self.far = cfg.far
-        pass
     
     def sample_uniform(self, rays_o, rays_d, N_samples, perturb, lindisp=False, pytest=False):
         near, far = self.near, self.far
@@ -151,7 +152,6 @@ class InfoSampler():
             z_vals = 1./(1./near * (1.-t_vals) + 1./far * (t_vals))
 
         z_vals = z_vals.expand([N_rays, N_samples])
-
         if perturb > 0.:
             # get intervals between samples
             mids = .5 * (z_vals[...,1:] + z_vals[...,:-1])
@@ -175,10 +175,9 @@ class InfoSampler():
         z_vals_mid = .5 * (z_vals[...,1:] + z_vals[...,:-1])
         z_samples = sample_pdf(z_vals_mid, weights[...,1:-1], N_importance, det=(perturb==0.), pytest=pytest)
         z_samples = z_samples.detach()
-
-        z_vals, _ = jt.argsort(jt.cat([z_vals, z_samples], -1), -1)[0]
+        _, z_vals = jt.argsort(jt.concat([z_vals, z_samples], -1), -1)
         pts = rays_o[...,None,:] + rays_d[...,None,:] * z_vals[...,:,None] # [N_rays, N_samples + N_importance, 3]
-        return pts, z_vals
+        return pts, z_vals, z_samples
 
     def rays2rgb(self, network_outputs, training_background_color, inference=False):
         if self.using_fp16:

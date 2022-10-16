@@ -27,15 +27,18 @@ class InfoRunner():
             self.dataset["val"] = build_from_cfg(self.cfg.dataset.val, DATASETS)
         else:
             self.dataset["val"] = self.dataset["train"]
-        self.dataset["test"]    = None
+        self.dataset["test"]    = build_from_cfg(self.cfg.dataset.test, DATASETS)
         self.model              = build_from_cfg(self.cfg.model, NETWORKS)
-        self.fine_model         = build_from_cfg(self.cfg_fine_model, NETWORKS)
+        self.fine_model         = build_from_cfg(self.cfg.fine_model, NETWORKS)
         self.cfg.model_obj      = self.model
         self.sampler            = build_from_cfg(self.cfg.sampler, SAMPLERS)
         self.cfg.sampler_obj    = self.sampler
-        self.optimizer          = build_from_cfg(self.cfg.optim, OPTIMS, params=self.model.parameters())
-        self.optimizer          = build_from_cfg(self.cfg.expdecay, OPTIMS, nested_optimizer=self.optimizer)
-        self.ema_optimizer      = build_from_cfg(self.cfg.ema, OPTIMS, params=self.model.parameters())
+        optimized_parmas = self.model.parameters()
+        if self.fine_model:
+            optimized_parmas += self.fine_model.parameters()
+        self.optimizer          = build_from_cfg(self.cfg.optim, OPTIMS, params=optimized_parmas)
+        # self.optimizer          = build_from_cfg(self.cfg.expdecay, OPTIMS, nested_optimizer=self.optimizer)
+        self.ema_optimizer      = build_from_cfg(self.cfg.ema, OPTIMS, params=optimized_parmas)
         self.loss_func          = build_from_cfg(self.cfg.loss, LOSSES)
         self.background_color   = self.cfg.background_color # 
         self.tot_train_steps    = self.cfg.tot_train_steps
@@ -60,8 +63,53 @@ class InfoRunner():
         self.W = self.image_resolutions[0]
         self.H = self.image_resolutions[1]
         self.white_bkgd = self.cfg.white_bkgd
+        self.N_entropy = self.cfg.N_entropy
         if self.white_bkgd:
             self.background_color = [1., 1., 1.]
+        self.all_images = len(self.dataset["train"].ori_image_data) + self.dataset["val"].n_images + self.dataset["test"].n_images
+        # self.debug_load_ckpt("/home/penghy/InfoNeRF/model.pth", "/home/penghy/InfoNeRF/fine_model.pth")
+    
+    def debug_load_ckpt(self, model, fine_model):
+        self.model.load(model)
+        self.fine_model.load(fine_model)
+
+    def sample_unseen_rays(self, H, W, i):
+        img_i = np.random.choice(self.all_images-1)
+        split = "train"
+        if img_i >= len(self.dataset["train"].ori_image_data):
+            img_i -= len(self.dataset["train"].ori_image_data)
+            split = "val"
+            if img_i >= self.dataset["val"].n_images:
+                img_i -= self.dataset["val"].n_images
+                split = "test"
+            img = self.dataset[split].image_data[img_i]
+            poses = self.dataset[split].transforms_gpu[img_i]
+        else:
+            img = self.dataset[split].ori_image_data[img_i]
+            poses = self.dataset[split].ori_forms[img_i]
+        rays_o, rays_d = self.dataset[split].generate_rays_id(img_i, H, W)
+        # TODO: add precrop iters
+        # if i < self.cfg.precrop_iters:
+        #     dH = int(H//2 * self.cfg.precrop_frac)
+        #     dW = int(W//2 * self.cfg.precrop_frac)
+        #     coords = jt.stack(
+        #         jt.meshgrid(
+        #             jt.linspace(H//2 - dH, H//2 + dH - 1, 2*dH), 
+        #             jt.linspace(W//2 - dW, W//2 + dW - 1, 2*dW)
+        #         ), -1)
+        # else:
+        coords = jt.stack(jt.meshgrid(jt.linspace(0, H-1, H), jt.linspace(0, W-1, W)), -1)  # (H, W, 2)
+        coords = coords.reshape(-1,2)  # (H * W, 2)
+        select_inds = np.random.choice(coords.shape[0], size=[self.N_entropy], replace=False)  # (N_rand,)
+        select_coords = coords[select_inds]  # (N_rand, 2)
+        rays_o_ent = rays_o[select_coords[:, 0] * H + select_coords[:, 1]]  # (N_rand, 3)
+        rays_d_ent = rays_d[select_coords[:, 0] * H + select_coords[:, 1]]  # (N_rand, 3)
+        if self.cfg.use_viewdirs:
+            # provide ray directions as input
+            viewdirs = rays_d_ent
+            viewdirs = viewdirs / jt.norm(viewdirs, dim=-1, keepdim=True)
+            viewdirs = viewdirs.reshape(-1,3)
+        return rays_o_ent, rays_d_ent, viewdirs
 
     def render_rays(self, rays_o, rays_d, viewdirs, mode="train"):
         entropy_ray_zvals = self.cfg.entropy
@@ -69,13 +117,22 @@ class InfoRunner():
         extract_sigma = None # origin implementation not use this.
         raw_noise_std, white_bkgd, pytest = self.cfg.raw_noise_std, self.cfg.white_bkgd, self.cfg.pytest
         pos, z_vals = self.sampler.sample_uniform(rays_o, rays_d, N_samples=self.cfg.N_samples, perturb=self.cfg.perturb, lindisp=self.cfg.lindisp)
-        network_outputs = self.model(pos, dir)
+        network_outputs = self.model(pos, viewdirs)
         rgb_map, disp_map, acc_map, weights, depth_map = self.sampler.raw2outputs(network_outputs, z_vals, rays_d, raw_noise_std, white_bkgd, pytest=pytest)
+        # for m in self.model.parameters():
+        #     print(m.shape, m.sum())
+        # print("=====================================")
+        # for m in self.fine_model.parameters():
+        #     print(m.shape, m.sum())
         if self.cfg.N_importance > 0: # fine stage
             rgb_map_0, disp_map_0, acc_map_0 = rgb_map, disp_map, acc_map
-            pts, z_vals = self.sampler.sample_fine(rays_o, rays_d, z_vals, weights, N_importance=self.cfg.N_importance, perturb=self.cfg.perturb, pytest=pytest)
+            pts, z_vals, z_samples = self.sampler.sample_fine(rays_o, rays_d, z_vals, weights, N_importance=self.cfg.N_importance, perturb=self.cfg.perturb, pytest=pytest)
+            # print("z_sample: ", z_vals.sum(-1))
             model = self.fine_model if self.fine_model else self.model
-            network_outputs = model(pts, viewdirs) 
+            # print("z_sample: ", pts.sum(-1).sum(-1))
+            # print("viewdirs: ", viewdirs.sum(-1))
+            network_outputs = self.fine_model(pts, viewdirs) 
+            # print("raws: ", network_outputs.sum(-1))
         if entropy_ray_zvals or extract_sigma or extract_alpha:
             rgb_map, disp_map, acc_map, weights, depth_map, others = self.sampler.raw2outputs(network_outputs, z_vals, rays_d, raw_noise_std, white_bkgd, pytest=pytest, out_sigma=True,out_alpha=True, out_dist=True)
         else:
@@ -86,12 +143,22 @@ class InfoRunner():
             ret['alpha'] = others['alpha']
             ret['z_vals'] = z_vals
             ret['dists'] = others['dists']
+        if self.cfg.N_importance > 0:
+            ret['rgb0'] = rgb_map_0
+            ret['disp0'] = disp_map_0
+            ret['acc0'] = acc_map_0
+            # ret['z_std'] = jt.std(z_samples, dim=-1, unbiased=False)  # [N_rays]
         return ret
 
     def train(self):
         for i in tqdm(range(self.start, self.tot_train_steps)):
             self.cfg.m_training_step = i
             img_ids, rays_o, rays_d, rgb_target, viewdirs = next(self.dataset["train"])
+            N_rgb = rays_o.shape[0]
+            unseen_rays_o, unseen_rays_d, unseen_rays_v = self.sample_unseen_rays(self.H, self.W, i)
+            rays_o = jt.concat([rays_o, unseen_rays_o], 0)
+            rays_d = jt.concat([rays_d, unseen_rays_d], 0)
+            viewdirs = jt.concat([viewdirs, unseen_rays_v], 0)
             if self.white_bkgd:
                 training_background_color = jt.ones([rgb_target.shape[0],3]).stop_grad()
             else:
@@ -99,9 +166,18 @@ class InfoRunner():
 
             rgb_target = (rgb_target[..., :3] * rgb_target[..., 3:] + training_background_color * (1 - rgb_target[..., 3:])).detach()
             ret = self.render_rays(rays_o, rays_d, viewdirs, "train")
+            rgb = ret["rgb_map"]
+            rgb0 = ret["rgb0"][:N_rgb] if "rgb0" in ret else None
             alpha_raw = None if "alpha" not in ret else ret["alpha"]
-            acc_raw = None if "acc_raw" not in ret else ret["acc"]
-            loss = self.loss_func(rgb, rgb_target, alpha_raw, acc_raw)
+            acc_raw = None if "acc_map" not in ret else ret["acc_map"]
+            loss = self.loss_func(rgb[:N_rgb], rgb_target, alpha_raw, acc_raw, rgb0)
+            print(loss)
+            # infonerf style lr decay.
+            decay_rate = 0.1
+            decay_steps = self.cfg.lrate_decay * 1000
+            new_lrate = self.cfg.lrate * (decay_rate ** (i / decay_steps))
+            for pg in self.optimizer.param_groups:
+                pg['lr'] = new_lrate
             self.optimizer.step(loss)
             self.ema_optimizer.ema_step()
             # self.loss_func.update(i)
@@ -115,9 +191,9 @@ class InfoRunner():
         self.test()
     
     def test(self, load_ckpt=False):
-        if load_ckpt:
-            assert os.path.exists(self.ckpt_path), "ckpt file does not exist: "+self.ckpt_path
-            self.load_ckpt(self.ckpt_path)
+        # if load_ckpt:
+        #     assert os.path.exists(self.ckpt_path), "ckpt file does not exist: "+self.ckpt_path
+        #     self.load_ckpt(self.ckpt_path)
         if self.dataset["test"] is None:
             self.dataset["test"] = build_from_cfg(self.cfg.dataset.test, DATASETS)
         if not os.path.exists(os.path.join(self.save_path, "test")):
@@ -155,6 +231,7 @@ class InfoRunner():
         jt.save({
             'global_step': self.cfg.m_training_step,
             'model': self.model.state_dict(),
+            "fine_model": self.fine_model.state_dict(),
             'sampler': self.sampler.state_dict(),
             'optimizer': self.optimizer.state_dict(),
             'nested_optimizer': self.optimizer._nested_optimizer.state_dict(),
@@ -183,7 +260,7 @@ class InfoRunner():
         
     def val_img(self, iter):
         with jt.no_grad():
-            img, _, img_tar= self.render_img(dataset_mode="val")
+            img, _, img_tar= self.render_img(dataset_mode="train")
             self.save_img(self.save_path+f"/img{iter}.png", img)
             self.save_img(self.save_path+f"/target{iter}.png", img_tar)
             return img2mse(
@@ -213,6 +290,7 @@ class InfoRunner():
                 mse_list.append(img2mse(
                 jt.array(img), 
                 jt.array(img_tar)).item())
+                exit(0)
         return mse_list
 
     def save_img(self, path, img, alpha=None):
@@ -240,7 +318,7 @@ class InfoRunner():
         pixel = 0
         imgs = np.empty([H*W+self.n_rays_per_batch, 3])
         alphas = np.empty([H*W+self.n_rays_per_batch, 1])
-        for pixel in range(0, W*H, self.n_rays_per_batch):
+        for iter, pixel in enumerate(range(0, W*H, self.n_rays_per_batch)):
             end = pixel+self.n_rays_per_batch
             rays_o = rays_o_total[pixel:end]
             rays_d = rays_d_total[pixel:end]
@@ -249,8 +327,10 @@ class InfoRunner():
                     [rays_o, jt.ones([end-H*W]+rays_o.shape[1:], rays_o.dtype)], dim=0)
                 rays_d = jt.concat(
                     [rays_d, jt.ones([end-H*W]+rays_d.shape[1:], rays_d.dtype)], dim=0)
-            if self.use_viewdirs:
-                # In fact, viewdirs are the same as rgb_d?
+            rays_d = rays_d.squeeze(-1)
+            # print("ro: ", rays_o)
+            # print("rd: ", rays_d)
+            if self.cfg.use_viewdirs:
                 # provide ray directions as input
                 viewdirs = rays_d
                 viewdirs = viewdirs / jt.norm(viewdirs, dim=-1, keepdim=True)
@@ -260,7 +340,9 @@ class InfoRunner():
             # network_outputs = self.model(pos, dir)
             # rgb,alpha = self.sampler.rays2rgb(network_outputs, inference=True)
             imgs[pixel:end] = ret["rgb_map"].numpy()
-            alphas[pixel:end] = ret["alpha"].numpy()
+            alphas[pixel:end, 0] = ret["acc_map"].numpy()
+            # if iter > 4:
+            #     break
         imgs = imgs[:H*W].reshape(H, W, 3)
         alphas = alphas[:H*W].reshape(H, W, 1)
         imgs_tar=jt.array(self.dataset[dataset_mode].image_data[img_id]).reshape(H, W, 4)
@@ -270,6 +352,7 @@ class InfoRunner():
             imgs = imgs + np.array(self.background_color)*(1-alphas)
             alphas = None
         jt.gc()
+        # exit(0)
         return imgs, alphas, imgs_tar
 
     def render_img_with_pose(self, pose):

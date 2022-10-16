@@ -46,13 +46,14 @@ class InfoNerfDataset():
         self.mode=mode
         self.idx_now=0
         cfg = get_cfg()
+        self.N_entropy = cfg.N_entropy
         self.use_viewdirs = cfg.use_viewdirs
         self.fewshot = None
         self.train_scene = None
         if mode == "train" and cfg.fewshot:
             self.fewshot = cfg.fewshot
             if cfg.train_scene:
-                self.train_scene = train_scene
+                self.train_scene = cfg.train_scene
         self.load_data()
         jt.gc()
         self.image_data = self.image_data.reshape(
@@ -106,7 +107,7 @@ class InfoNerfDataset():
         frames=json_data['frames']
         if self.mode=="val":
             frames=frames[::10]
-
+        iter=0
         for frame in tqdm(frames):
             if self.have_img:
                 img_path=os.path.join(self.root_dir,frame['file_path'])
@@ -123,16 +124,23 @@ class InfoNerfDataset():
                 self.image_data.append(np.zeros((self.H,self.W,3)))
             self.n_images+=1
             matrix=np.array(frame['transform_matrix'],np.float32)[:-1, :]
-            self.transforms_gpu.append(
-                            self.matrix_nerf2ngp(matrix, self.scale, self.offset))
+            # self.transforms_gpu.append(
+            #                 self.matrix_nerf2ngp(matrix, self.scale, self.offset))
+            self.transforms_gpu.append(matrix)
+            # iter+=1
+            # if iter>4:
+            #     break
         if self.fewshot:
             if self.train_scene:
-                inds = self.train_scene
+                inds = np.array(self.train_scene).astype("int32")
             else:
                 inds = np.random.randint(0, self.n_images, (self.fewshot))
             self.n_images = self.fewshot
-            self.image_data = self.image_data[inds]
-            self.transforms_gpu = self.transforms_gpu[inds]
+            import copy
+            self.ori_image_data = copy.deepcopy(self.image_data)
+            self.ori_forms = copy.deepcopy(self.transforms_gpu)
+            self.image_data = np.array(self.image_data)[inds]
+            self.transforms_gpu = np.array(self.transforms_gpu)[inds]
         self.resolution=[self.W,self.H]
         self.resolution_gpu=jt.array(self.resolution)
         metadata=np.empty([11],np.float32)
@@ -166,7 +174,8 @@ class InfoNerfDataset():
 
         light_dir=np.array([0,0,0])
         metadata[8:]=light_dir
-        self.metadata =np.expand_dims(metadata,0).repeat(self.n_images,axis=0)
+        repeat_dim = len(self.ori_image_data) if self.fewshot else self.n_images
+        self.metadata =np.expand_dims(metadata,0).repeat(repeat_dim,axis=0)
         if self.aabb_scale is None:
             self.aabb_scale=json_data.get('aabb_scale',1)
         aabb_range=(0.5,0.5)
@@ -176,9 +185,12 @@ class InfoNerfDataset():
 
         self.image_data=jt.array(self.image_data)
         self.transforms_gpu=jt.array(self.transforms_gpu)
-        self.focal_lengths=jt.array(self.focal_lengths).repeat(self.n_images,1)
+        if self.mode == "train":
+            self.focal_lengths=jt.array(self.focal_lengths).repeat(len(self.ori_image_data),1)
+        else:
+            self.focal_lengths=jt.array(self.focal_lengths).repeat(self.n_images,1)
         ## transpose to adapt Eigen::Matrix memory
-        self.transforms_gpu=self.transforms_gpu.transpose(0,2,1)
+        # self.transforms_gpu=self.transforms_gpu.transpose(0,2,1)
         self.metadata=jt.array(self.metadata)
         if self.img_alpha and self.image_data.shape[-1]==3:
             self.image_data=jt.concat([self.image_data,jt.ones(self.image_data.shape[:-1]+(1,))],-1).stop_grad()
@@ -191,18 +203,42 @@ class InfoNerfDataset():
         focal_length =self.focal_lengths[img_id]
         xforms = self.transforms_gpu[img_id]
         principal_point = self.metadata[:, 4:6][img_id]
-        xforms=xforms.permute(0,2,1)
+        # xforms=xforms.permute(0,2,1)
         rays_o = xforms[...,  3]
         res = self.resolution_gpu
         x=((img_offset%self.W)+0.5)/self.W
         y=((img_offset//self.W)+0.5)/self.H
         xy=jt.stack([x,y],dim=-1)
-        rays_d = jt.concat([(xy-principal_point)* res/focal_length, jt.ones([bs, 1])], dim=-1)
-        rays_d = jt.normalize(xforms[ ...,  :3].matmul(rays_d.unsqueeze(2)))
+        rays_d = jt.concat([(xy-principal_point)* jt.array([1,-1])* res/focal_length, -jt.ones([bs, 1])], dim=-1)
+        rays_d = xforms[ ...,  :3].matmul(rays_d.unsqueeze(2))
         rays_d=rays_d.squeeze(-1)
         rgb_tar=self.image_data.reshape(-1,4)[index]
         return img_id,rays_o,rays_d,rgb_tar
 
+    def generate_rays_id(self,img_id,H,W,padding=0):
+        H=int(H)
+        W=int(W)
+        img_size=H*W
+        focal_length=self.focal_lengths[img_id]
+        if self.fewshot:
+            xforms = jt.array(self.ori_forms[img_id])
+        else:
+            xforms = self.transforms_gpu[img_id]
+        principal_point = self.metadata[:, 4:6][img_id]
+        xy = jt.stack(jt.meshgrid((jt.linspace(0, H-1, H)+padding)/H, (jt.linspace(0,
+                      W-1, W)+padding)/W), dim=-1).permute(1, 0, 2).reshape(-1, 2)
+        # assert H==W
+        # xy += (jt.rand_like(xy)-0.5)/H
+        # xforms=xforms.permute(1,0)
+        print(xforms.shape)
+        rays_o = xforms[:,  3].unsqueeze(0).expand(H*W, 1)
+        res = jt.array(self.resolution)
+        rays_d = jt.concat([(xy-principal_point)* jt.array([1,-1])* res/focal_length, -jt.ones([H*W, 1])], dim=-1)
+        # rays_d = jt.normalize(xforms[ :,  :3].matmul(rays_d.unsqueeze(2)))
+        rays_d = xforms[ :,  :3].matmul(rays_d.unsqueeze(2))
+        rays_d=rays_d.squeeze(-1)
+        return rays_o, rays_d
+    
     def generate_rays_total(self, img_id,H,W):
         H=int(H)
         W=int(W)
@@ -212,9 +248,7 @@ class InfoNerfDataset():
         principal_point = self.metadata[:, 4:6][img_id]
         xy = jt.stack(jt.meshgrid((jt.linspace(0, H-1, H)+0.5)/H, (jt.linspace(0,
                       W-1, W)+0.5)/W), dim=-1).permute(1, 0, 2).reshape(-1, 2)
-        # assert H==W
-        # xy += (jt.rand_like(xy)-0.5)/H
-        xforms=xforms.permute(1,0)
+        # xforms=xforms.permute(1,0)
         rays_o = xforms[:,  3]
         res = jt.array(self.resolution)
         rays_d = jt.concat([(xy-principal_point)* res/focal_length, jt.ones([H*W, 1])], dim=-1)
@@ -222,7 +256,7 @@ class InfoNerfDataset():
         rays_d=rays_d.squeeze(-1)
         return rays_o, rays_d
 
-    def generate_rays_total_test(self, img_ids, H, W):
+    def generate_rays_total_test(self, img_ids, H, W, padding=0):
         # select focal,trans,p_point
         focal_length = jt.gather(
             self.focal_lengths, 0, img_ids)
@@ -230,19 +264,19 @@ class InfoNerfDataset():
         principal_point = jt.gather(
             self.metadata[:, 4:6], 0, img_ids)
         # rand generate uv 0~1
-        xy = jt.stack(jt.meshgrid((jt.linspace(0, H-1, H)+0.5)/H, (jt.linspace(0,
-                      W-1, W)+0.5)/W), dim=-1).permute(1, 0, 2).reshape(-1, 2)
+        xy = jt.stack(jt.meshgrid((jt.linspace(0, H-1, H)+padding)/H, (jt.linspace(0,
+                      W-1, W)+padding)/W), dim=-1).permute(1, 0, 2).reshape(-1, 2)
         # assert H==W
         # xy += (jt.rand_like(xy)-0.5)/H
         xy_int = jt.stack(jt.meshgrid(jt.linspace(
             0, H-1, H), jt.linspace(0, W-1, W)), dim=-1).permute(1, 0, 2).reshape(-1, 2)
-        xforms=xforms.fuse_transpose([0,2,1])
+        # xforms=xforms.fuse_transpose([0,2,1])
         rays_o = jt.gather(xforms, 0, img_ids)[:, :, 3]
         res = jt.array(self.resolution)
-        rays_d = jt.concat([(xy-jt.gather(principal_point, 0, img_ids))
-                           * res/focal_length, jt.ones([H*W, 1])], dim=-1)
-        rays_d = jt.normalize(jt.gather(xforms, 0, img_ids)[
-                              :, :, :3].matmul(rays_d.unsqueeze(2)))
+        rays_d = jt.concat([(xy-jt.gather(principal_point, 0, img_ids))* jt.array([1,-1])*res/focal_length, -jt.ones([H*W, 1])], dim=-1)
+        # rays_d = jt.normalize(jt.gather(xforms, 0, img_ids)[
+        #                       :, :, :3].matmul(rays_d.unsqueeze(2)))
+        rays_d = jt.gather(xforms, 0, img_ids)[:, :, :3].matmul(rays_d.unsqueeze(2))
         # resolution W H
         # img H W
         rays_pix = ((xy_int[:, 1]) * H+(xy_int[:, 0])).int()
@@ -274,7 +308,7 @@ class InfoNerfDataset():
         matrix[:, 2] *= self.correct_pose[2]
         matrix[:, 3] = matrix[:, 3] * scale + offset
         # cycle
-        matrix=matrix[[1,2,0]]
+        # matrix=matrix[[1,2,0]]
         return matrix
 
     def matrix_ngp2nerf(self, matrix, scale, offset):

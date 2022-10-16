@@ -1,12 +1,13 @@
 import numpy as np
 import jittor as jt
 from jittor import nn
-from jnerf.models.losses.mseloss import MSELoss
 from jnerf.utils.config import get_cfg
+from jnerf.utils.registry import LOSSES
 
 class EntropyLoss:
     def __init__(self, args):
         super(EntropyLoss, self).__init__()
+        args = get_cfg()
         self.N_samples = args.N_rand
         self.type_ = args.entropy_type 
         self.threshold = args.entropy_acc_threshold
@@ -15,7 +16,7 @@ class EntropyLoss:
         self.computing_ignore_smoothing = args.entropy_ignore_smoothing
         self.entropy_log_scaling = args.entropy_log_scaling
         self.N_entropy = args.N_entropy 
-        
+        self.type_ == args.entropy_type
         if self.N_entropy ==0:
             self.computing_entropy_all = True
     
@@ -50,9 +51,9 @@ class EntropyLoss:
         if not self.computing_entropy_all:
             acc = acc[self.N_samples:]
             sigma = sigma[self.N_samples:]
-        ray_prob = sigma / (jt.sum(sigma,-1).unsqueeze(-1)+1e-10)
+        ray_prob = sigma / (sigma.sum(-1).unsqueeze(-1)+1e-10)
         entropy_ray = self.entropy(ray_prob)
-        entropy_ray_loss = jt.sum(entropy_ray, -1)
+        entropy_ray_loss = entropy_ray.sum(-1)
         
         # masking no hitting poisition?
         mask = (acc>self.threshold).detach()
@@ -142,10 +143,10 @@ class InfoLoss(nn.Module):
     def __init__(self):
         super().__init__()
         args = get_cfg()
-        self.mseloss = MSELoss()
         self.entropy_loss = EntropyLoss(args)
         self.l2 = args.entropy_ray_zvals_lambda
         self.smoothing_loss = None
+        self.no_coarse = args.no_coarse
         if args.smoothing:
             self.smoothing_loss = SmoothingLoss(args)
             self.l3 = args.smoothing_lambda
@@ -154,7 +155,9 @@ class InfoLoss(nn.Module):
         # use for smoothing loss, for now pass.
         pass
     
-    def execute(self, rgb, rgb_target, alpha_raw=None, acc_raw=None):
-        image_loss = self.mseloss(rgb, rgb_target)
+    def execute(self, rgb, rgb_target, alpha_raw=None, acc_raw=None, rgb0=None):
+        image_loss = jt.mean((rgb - rgb_target) ** 2)
         image_loss += self.l2 * self.entropy_loss.ray_zvals(alpha_raw, acc_raw)
+        if rgb0 is not None and not self.no_coarse:
+            image_loss += jt.mean((rgb0 - rgb_target) ** 2)
         return image_loss
