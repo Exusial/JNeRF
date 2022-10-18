@@ -100,6 +100,7 @@ lindisp = False
 pytest = False
 no_coarse = False
 lrate = 5e-4
+use_batching=True
 # Entropy
 N_samples = 64
 N_importance = 128

@@ -232,7 +232,6 @@ class InfoRunner():
             'global_step': self.cfg.m_training_step,
             'model': self.model.state_dict(),
             "fine_model": self.fine_model.state_dict(),
-            'sampler': self.sampler.state_dict(),
             'optimizer': self.optimizer.state_dict(),
             'nested_optimizer': self.optimizer._nested_optimizer.state_dict(),
             'ema_optimizer': self.ema_optimizer.state_dict(),
@@ -260,7 +259,7 @@ class InfoRunner():
         
     def val_img(self, iter):
         with jt.no_grad():
-            img, _, img_tar= self.render_img(dataset_mode="train")
+            img, _, img_tar= self.render_img(dataset_mode="val")
             self.save_img(self.save_path+f"/img{iter}.png", img)
             self.save_img(self.save_path+f"/target{iter}.png", img_tar)
             return img2mse(

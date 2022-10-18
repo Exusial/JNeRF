@@ -50,6 +50,10 @@ class InfoNerfDataset():
         self.use_viewdirs = cfg.use_viewdirs
         self.fewshot = None
         self.train_scene = None
+        self.precrop_iters = 500 if not cfg.precrop_iter else cfg.precrop_iter
+        self.precrop_frac = cfg.precrop_frac
+        self.iter = 0
+        self.use_batching = cfg.use_batching
         if mode == "train" and cfg.fewshot:
             self.fewshot = cfg.fewshot
             if cfg.train_scene:
@@ -60,20 +64,26 @@ class InfoNerfDataset():
             self.n_images, -1, 4).detach()
 
     def __next__(self):
-        if self.idx_now+self.batch_size >= self.shuffle_index.shape[0]:
-            del self.shuffle_index
-            self.shuffle_index=jt.randperm(self.n_images*self.H*self.W).detach()
-            jt.gc()
-            self.idx_now = 0      
-        img_index=self.shuffle_index[self.idx_now:self.idx_now+self.batch_size]
-        img_ids,rays_o,rays_d,rgb_target=self.generate_random_data(img_index,self.batch_size)
-        self.idx_now+=self.batch_size
+        if self.use_batching:
+            if self.idx_now+self.batch_size >= self.shuffle_index.shape[0]:
+                del self.shuffle_index
+                self.shuffle_index=jt.randperm(self.n_images*self.H*self.W).detach()
+                jt.gc()
+                self.idx_now = 0      
+            img_index=self.shuffle_index[self.idx_now:self.idx_now+self.batch_size]
+            img_ids,rays_o,rays_d,rgb_target=self.generate_random_data(img_index,self.batch_size)
+            self.idx_now+=self.batch_size
+        else:
+            ids = int(np.random.randint(self.n_images-1))
+            img_ids = ids * jt.ones((self.batch_size, 1)).int32()
+            rays_o, rays_d, rgb_target = generate_data_from_single(ids, self.batch_size)
         viewdirs = None
         if self.use_viewdirs:
             # provide ray directions as input
             viewdirs = rays_d
             viewdirs = viewdirs / jt.norm(viewdirs, dim=-1, keepdim=True)
             viewdirs = viewdirs.reshape(-1,3)
+        self.iter += 1
         return img_ids, rays_o, rays_d, rgb_target, viewdirs
         
     def load_data(self,root_dir=None):
@@ -197,6 +207,28 @@ class InfoNerfDataset():
         self.shuffle_index=jt.randperm(self.H*self.W*self.n_images).detach()
         jt.gc()
     
+    def generate_data_from_single(self,img_id,bs):
+        rays_o, rays_d = generate_rays_id(img_id)
+        if self.iter < self.precrop_iters:
+            dH = int(self.H//2 * self.precrop_frac)
+            dW = int(self.W//2 * self.precrop_frac)
+            coords = jt.stack(
+                jt.meshgrid(
+                    jt.linspace(H//2 - dH, H//2 + dH - 1, 2*dH), 
+                    jt.linspace(W//2 - dW, W//2 + dW - 1, 2*dW)
+                ), -1)
+            if self.iter == 0:
+                print(f"[Config] Center cropping of size {2*dH} x {2*dW} is enabled until iter {args.precrop_iters}")                
+        else:
+            coords = jt.stack(jt.meshgrid(jt.linspace(0, H-1, H), jt.linspace(0, W-1, W)), -1)  # (H, W, 2)
+        coords = coords.reshape(-1,2)  # (H * W, 2)
+        select_inds = np.random.choice(coords.shape[0], size=[bs], replace=False)  # (N_rand,)
+        select_coords = coords[select_inds]  # (N_rand, 2)
+        rays_o = rays_o[select_coords[:, 0], select_coords[:, 1]]  # (N_rand, 3)
+        rays_d = rays_d[select_coords[:, 0], select_coords[:, 1]]  # (N_rand, 3)
+        rgb_tar = self.image_data[img_id, select_coords[:, 0], select_coords[:, 1],:] 
+        return rays_o, rays_d, rgb_tar
+
     def generate_random_data(self,index,bs):
         img_id=index//(self.H*self.W)
         img_offset=index%(self.H*self.W)
@@ -230,7 +262,6 @@ class InfoNerfDataset():
         # assert H==W
         # xy += (jt.rand_like(xy)-0.5)/H
         # xforms=xforms.permute(1,0)
-        print(xforms.shape)
         rays_o = xforms[:,  3].unsqueeze(0).expand(H*W, 1)
         res = jt.array(self.resolution)
         rays_d = jt.concat([(xy-principal_point)* jt.array([1,-1])* res/focal_length, -jt.ones([H*W, 1])], dim=-1)
